@@ -122,6 +122,7 @@ public static class PushButtonPlayModeTests
         AddVRFilterTest();
         AddHapticsTest();
         AddHandEarlyOutTest();
+        AddInspectorTest();
 
         nextStepTime = EditorApplication.timeSinceStartup + stepDelays[0];
         EditorApplication.update += Tick;
@@ -298,6 +299,49 @@ public static class PushButtonPlayModeTests
             Check(name + " slot " + f + " position", error < 0.005f, "off by " + error.ToString("F4") + " m");
             if (hasFinger) Check(name + " slot " + f + " beyond the distal bone", Vector3.Dot(tips[f] - d, d - i) > 0f, "not past the distal bone");
         }
+    }
+
+    // Plan step 7.1: PushButton's inspector is PushButtonEditor, and its event dropdown lists an UdonSharp target's
+    // public events (ButtonActionExample: OnButtonPressed) but falls back to free text without an UdonSharp program.
+    static void AddInspectorTest()
+    {
+        const string name = "inspector";
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            PushButton proxy = go != null ? go.GetComponent<PushButton>() : null;
+            if (!Check(name + ": find PushButton component", proxy != null, "no PushButton on " + ButtonPath)) return;
+            // UdonSharp's own override editor draws every UdonSharpBehaviour and hosts the user's editor in _userEditor.
+            Editor editor = Editor.CreateEditor(proxy);
+            System.Reflection.FieldInfo userEditorField = editor != null
+                ? editor.GetType().GetField("_userEditor", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                : null;
+            Object userEditor = userEditorField != null ? (Object)userEditorField.GetValue(editor) : null;
+            Check(name + " uses PushButtonEditor", userEditor is PushButtonEditor,
+                "got " + (editor != null ? editor.GetType().Name : "null") + " hosting " + (userEditor != null ? userEditor.GetType().Name : "null"));
+            if (editor != null) Object.DestroyImmediate(editor);
+
+            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>("Assets/PushButton/Examples/ButtonActionExample.asset");
+            if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
+            GameObject holder = new GameObject("PushButtonTestInspectorTarget");
+            holder.SetActive(false);
+            UdonBehaviour example = holder.AddComponent<UdonBehaviour>();
+            UdonBehaviour noProgram = holder.AddComponent<UdonBehaviour>();
+            example.programSource = program;
+
+            string[] events = PushButtonEditor.GetEventNames(example);
+            string listed = events != null ? string.Join(", ", events) : "null";
+            Check(name + " ButtonActionExample lists OnButtonPressed", events != null && events.Length == 1 && events[0] == "OnButtonPressed", "got " + listed);
+            Check(name + " no target falls back to text", PushButtonEditor.GetEventNames(null) == null, "not null");
+            Check(name + " non-UdonSharp program falls back to text", PushButtonEditor.GetEventNames(noProgram) == null, "not null");
+
+            string[] buttonEvents = PushButtonEditor.GetEventNames(go.GetComponent<UdonBehaviour>());
+            listed = buttonEvents != null ? string.Join(", ", buttonEvents) : "null";
+            Check(name + " PushButton lists its own events", buttonEvents != null && System.Array.IndexOf(buttonEvents, "NetPlayClickAnimation") >= 0, "got " + listed);
+            Check(name + " built-in events left out", buttonEvents != null && System.Array.IndexOf(buttonEvents, "Interact") < 0
+                && System.Array.IndexOf(buttonEvents, "OnPlayerJoined") < 0 && System.Array.IndexOf(buttonEvents, "GetType") < 0, "got " + listed);
+            Object.DestroyImmediate(holder);
+        });
     }
 
     // Plan step 2.4: the gizmo's rest box matches the button, and with travel 0.019 the full-depth box's
