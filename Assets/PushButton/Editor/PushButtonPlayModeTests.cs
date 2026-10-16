@@ -40,6 +40,8 @@ public static class PushButtonPlayModeTests
     static int actionCount;
     static float savedClickDuration;
     static float clickTime;
+    static int lastTrackingLogCount;
+    static int trackingLogs;
 
     static PushButtonPlayModeTests()
     {
@@ -78,6 +80,7 @@ public static class PushButtonPlayModeTests
         {
             EditorApplication.update -= Tick;
             Application.logMessageReceived -= CountActionLogs;
+            Application.logMessageReceived -= CountTrackingLogs;
         }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
         SessionState.EraseBool(ArmedKey);
@@ -97,6 +100,7 @@ public static class PushButtonPlayModeTests
         AddRestPoseTest();
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
+        AddPlayerTrackingTest();
 
         nextStepTime = EditorApplication.timeSinceStartup + stepDelays[0];
         EditorApplication.update += Tick;
@@ -526,6 +530,111 @@ public static class PushButtonPlayModeTests
             CheckActionCount(name + " out of range no fire", 0);
             TearDownActionTarget(name);
         });
+    }
+
+    // Plan step 5.1: the button tracks everyone in the instance and logs the count on each join and leave. Spawns two
+    // ClientSim remote players, removes one, and checks that per-fingertip state survives a refresh.
+    static void AddPlayerTrackingTest()
+    {
+        const string name = "player tracking";
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            CheckTrackedPlayers(name + " at start");
+            // Mark the local player's first fingertip so the refreshes below must carry it over.
+            bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
+            int local = System.Array.IndexOf((VRCPlayerApi[])button.GetProgramVariable("trackedPlayers"), Networking.LocalPlayer);
+            if (local >= 0) engaged[local * 4] = true;
+
+            trackingLogs = 0;
+            lastTrackingLogCount = -1;
+            Application.logMessageReceived += CountTrackingLogs;
+            ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote A");
+            ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote B");
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Check(name + " join logs", trackingLogs == 2, "got " + trackingLogs + " tracking logs");
+            Check(name + " join log count", lastTrackingLogCount == VRCPlayerApi.GetPlayerCount(),
+                "logged " + lastTrackingLogCount + ", " + VRCPlayerApi.GetPlayerCount() + " players");
+            CheckTrackedPlayers(name + " after two joins");
+            CheckLocalFingertipKept(name + " after joins");
+            VRCPlayerApi remoteA = FindPlayer("PushButtonTest Remote A");
+            if (!Check(name + ": find remote A", remoteA != null, "not spawned")) return;
+            ClientSimMain.RemovePlayer(remoteA);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Check(name + " leave log", trackingLogs == 3, "got " + trackingLogs + " tracking logs");
+            Check(name + " leave log count", lastTrackingLogCount == VRCPlayerApi.GetPlayerCount(),
+                "logged " + lastTrackingLogCount + ", " + VRCPlayerApi.GetPlayerCount() + " players");
+            CheckTrackedPlayers(name + " after a leave");
+            CheckLocalFingertipKept(name + " after leave");
+            VRCPlayerApi remoteB = FindPlayer("PushButtonTest Remote B");
+            Check(name + " remote B tracked", remoteB != null &&
+                System.Array.IndexOf((VRCPlayerApi[])button.GetProgramVariable("trackedPlayers"), remoteB) >= 0, "missing");
+            if (remoteB != null) ClientSimMain.RemovePlayer(remoteB);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Application.logMessageReceived -= CountTrackingLogs;
+            Check(name + " second leave log", trackingLogs == 4 && lastTrackingLogCount == VRCPlayerApi.GetPlayerCount(),
+                "got " + trackingLogs + " tracking logs, last " + lastTrackingLogCount);
+            CheckTrackedPlayers(name + " after both left");
+            CheckLocalFingertipKept(name + " after both left");
+            // Clear the marker so later code sees a clean state.
+            bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
+            for (int i = 0; i < engaged.Length; i++) engaged[i] = false;
+            Debug.Log("[PushButtonTest] " + name + ": " + trackingLogs + " tracking logs, now " + VRCPlayerApi.GetPlayerCount() + " players");
+        });
+    }
+
+    // The tracked list holds exactly the valid players in the instance, with four fingertip slots each.
+    static void CheckTrackedPlayers(string name)
+    {
+        VRCPlayerApi[] tracked = (VRCPlayerApi[])button.GetProgramVariable("trackedPlayers");
+        bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
+        bool[] wasInFront = (bool[])button.GetProgramVariable("fingertipWasInFront");
+        int expected = VRCPlayerApi.GetPlayerCount();
+        Debug.Log("[PushButtonTest] " + name + ": tracking " + tracked.Length + " of " + expected + " players");
+        Check(name + " count", tracked.Length == expected, "tracking " + tracked.Length + ", expected " + expected);
+        Check(name + " state arrays", engaged.Length == tracked.Length * 4 && wasInFront.Length == tracked.Length * 4,
+            "engaged " + engaged.Length + ", wasInFront " + wasInFront.Length);
+        bool allValid = true;
+        foreach (VRCPlayerApi player in tracked) allValid &= Utilities.IsValid(player);
+        Check(name + " all valid", allValid, "an invalid player is tracked");
+        Check(name + " local player tracked", System.Array.IndexOf(tracked, Networking.LocalPlayer) >= 0, "missing");
+    }
+
+    static void CheckLocalFingertipKept(string name)
+    {
+        VRCPlayerApi[] tracked = (VRCPlayerApi[])button.GetProgramVariable("trackedPlayers");
+        bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
+        int local = System.Array.IndexOf(tracked, Networking.LocalPlayer);
+        Check(name + " fingertip state kept", local >= 0 && engaged[local * 4], "local fingertip state lost");
+    }
+
+    static VRCPlayerApi FindPlayer(string displayName)
+    {
+        foreach (VRCPlayerApi player in VRCPlayerApi.AllPlayers)
+        {
+            if (player != null && player.displayName == displayName) return player;
+        }
+        return null;
+    }
+
+    static void CountTrackingLogs(string message, string stackTrace, LogType type)
+    {
+        const string prefix = "[PushButton] Button: tracking ";
+        if (!message.StartsWith(prefix)) return;
+        trackingLogs++;
+        int count;
+        if (int.TryParse(message.Substring(prefix.Length).Split(' ')[0], out count)) lastTrackingLogCount = count;
     }
 
     static void CheckButtonAtPress(string name, float press)

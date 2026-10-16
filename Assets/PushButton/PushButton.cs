@@ -99,6 +99,14 @@ public class PushButton : UdonSharpBehaviour
     private bool clickIsLocal;
     private float clickStartTime;
 
+    // Fingertip slots per player: left index, right index, left middle, right middle.
+    private const int FingertipsPerPlayer = 4;
+    // Everyone in the instance, refreshed on join and leave (never in Update), with per-player, per-fingertip state
+    // in parallel arrays: fingertip f of trackedPlayers[i] is at index i * FingertipsPerPlayer + f.
+    private VRCPlayerApi[] trackedPlayers = new VRCPlayerApi[0];
+    private bool[] fingertipEngaged = new bool[0];
+    private bool[] fingertipWasInFront = new bool[0];
+
     private void Start()
     {
 #if !UNITY_EDITOR
@@ -138,6 +146,60 @@ public class PushButton : UdonSharpBehaviour
             DisableInteractive = false;
             InteractionText = interactText;
         }
+    }
+
+    public override void OnPlayerJoined(VRCPlayerApi player)
+    {
+        RefreshPlayers(null);
+    }
+
+    public override void OnPlayerLeft(VRCPlayerApi player)
+    {
+        // The leaving player is still in the player list during this event, so leave them out explicitly.
+        RefreshPlayers(player);
+    }
+
+    /// <summary>
+    /// Rebuilds the cached player list (without the leaving player, if any) and the per-fingertip state arrays,
+    /// carrying over the state of players who were already tracked so a join or leave doesn't drop a press.
+    /// </summary>
+    private void RefreshPlayers(VRCPlayerApi leaving)
+    {
+        VRCPlayerApi[] all = new VRCPlayerApi[VRCPlayerApi.GetPlayerCount()];
+        VRCPlayerApi.GetPlayers(all);
+        int count = 0;
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (Utilities.IsValid(all[i]) && all[i] != leaving) count++;
+        }
+
+        VRCPlayerApi[] players = new VRCPlayerApi[count];
+        bool[] engaged = new bool[count * FingertipsPerPlayer];
+        bool[] wasInFront = new bool[count * FingertipsPerPlayer];
+        int next = 0;
+        for (int i = 0; i < all.Length; i++)
+        {
+            VRCPlayerApi player = all[i];
+            if (!Utilities.IsValid(player) || player == leaving) continue;
+            players[next] = player;
+            for (int old = 0; old < trackedPlayers.Length; old++)
+            {
+                if (trackedPlayers[old] != player) continue;
+                for (int f = 0; f < FingertipsPerPlayer; f++)
+                {
+                    engaged[next * FingertipsPerPlayer + f] = fingertipEngaged[old * FingertipsPerPlayer + f];
+                    wasInFront[next * FingertipsPerPlayer + f] = fingertipWasInFront[old * FingertipsPerPlayer + f];
+                }
+                break;
+            }
+            next++;
+        }
+        trackedPlayers = players;
+        fingertipEngaged = engaged;
+        fingertipWasInFront = wasInFront;
+
+        // TEMP (plan step 5.1): remove once the fingertip steps use the tracked players.
+        Debug.Log("[PushButton] " + name + ": tracking " + count + " players");
     }
 
     public override void Interact()

@@ -93,9 +93,10 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 
 ### Phase 5: Fingertip pressing
 
-- [ ] **5.1 Track players.**
+- [x] **5.1 Track players.**
   Keep a cached `VRCPlayerApi[]`, refreshed via `VRCPlayerApi.GetPlayers` in `OnPlayerJoined` and `OnPlayerLeft`, with parallel per-player, per-fingertip state arrays (`engaged`, `wasInFront`). Never allocate in `Update`.
   *Check:* a log on join and leave shows the correct player count in ClientSim, including with simulated remote players.
+  Done: `OnPlayerJoined` and `OnPlayerLeft` call `RefreshPlayers(leaving)`, which fills private `trackedPlayers` from `GetPlayers`, skipping invalid players and the leaving one. During `OnPlayerLeft` the leaving player is still in VRChat's (and ClientSim's) player list, so it has to be left out explicitly. The state arrays `fingertipEngaged` and `fingertipWasInFront` have `FingertipsPerPlayer = 4` slots per player (left index, right index, left middle, right middle), at index `player * 4 + fingertip`. On each refresh, the state of players who were already tracked is copied across, so a join or leave doesn't drop someone's press partway through. Arrays are only allocated in the refresh, never in `Update`. A temporary log, `[PushButton] Button: tracking N players` (marked `TEMP (plan step 5.1)`), runs on each refresh. Added `AddPlayerTrackingTest` to the harness. It runs last, uses `ClientSimMain.SpawnRemotePlayer` to add two remote players, then removes them one at a time with `ClientSimMain.RemovePlayer`. Each time it checks that the tracked list matches `GetPlayerCount()` and that the logged count is right (logs read 1 → 2 → 3 → 2 → 1). It also checks the state arrays are 4× the player count, every tracked player is valid, the local player is tracked, and the remaining remote player is still tracked after the other leaves. A marked fingertip state on the local player carries over through every refresh. Result: `[PushButtonTest] done: 136 passed, 0 failed`, 0 errors.
 
 - [ ] **5.2 Estimate fingertip positions.**
   Write a helper that returns each enabled fingertip for a player: the distal bone position plus `(distal - intermediate) * 0.8`, falling back to the hand bone if the finger bones are missing. Scale `fingertipRadius` by the player's avatar eye height, relative to a 1.6 m reference.
