@@ -45,6 +45,8 @@ public static class PushButtonPlayModeTests
     static Vector3 savedPlayerPos;
     static Quaternion savedPlayerRot;
     static Vector3[] tipsBeforeTeleport;
+    static GameObject debugTip;
+    static Vector3 savedParentPos;
 
     static PushButtonPlayModeTests()
     {
@@ -99,12 +101,14 @@ public static class PushButtonPlayModeTests
         AddGizmoTest("gizmo unrotated");
         AddPressTest("press unrotated", true);
         AddTriggerTest();
+        AddEngagementTest();
         AddClickTest();
         AddNetClickTest();
         AddRestPoseTest();
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
         AddPlayerTrackingTest();
+        AddRemotePressTest();
 
         nextStepTime = EditorApplication.timeSinceStartup + stepDelays[0];
         EditorApplication.update += Tick;
@@ -182,7 +186,8 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan step 5.2: the local player's fingertip estimates (exposed each frame by a temporary hook in Update) match the
+    // Plan step 5.2: the local player's fingertip estimates (left in Udon's buffers by the per-player loop in Update, as
+    // the local player is the only one in the instance at this point) match the
     // ClientSim avatar's finger bones, honour the finger toggles, carry the eye-height-scaled radius, and follow the
     // avatar when the player teleports 1 m sideways.
     static void AddFingertipTest()
@@ -337,6 +342,7 @@ public static class PushButtonPlayModeTests
     // deeper press, never goes past travelDistance, and springs back at returnSpeed. returnSpeed is lowered to
     // 0.01 m/s during the test so the spring-back is slow enough to catch half-way.
     // With the parent unrotated and travel 0.019, full travel puts the button 1 mm in front of the plate, (0, 1, 0.011).
+    // The press comes from the debug fingertip, pushed from in front of the face to 0.03 m past it in one frame.
     static void AddPressTest(string name, bool checkAbsolute)
     {
         const float overPress = 0.03f;
@@ -349,7 +355,12 @@ public static class PushButtonPlayModeTests
             buttonParent = go.transform.parent;
             savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
-            button.SetProgramVariable("debugLocalPress", overPress);
+            SetLocalPress(0f);
+        });
+        AddStep(0.2f, () =>
+        {
+            if (button == null) return;
+            PlaceDebugTip(overPress, 0f, 0f);
         });
         AddStep(0.5f, () =>
         {
@@ -370,7 +381,7 @@ public static class PushButtonPlayModeTests
             Check(name + " along parent -Z", Near(offsetInParent, new Vector3(0f, 0f, -travel)), "offset " + offsetInParent.ToString("F4"));
             if (checkAbsolute)
                 Check(name + " 1 mm in front of plate", Near(actual, new Vector3(0f, 1f, 0.011f)), "got " + actual.ToString("F4"));
-            button.SetProgramVariable("debugLocalPress", 0f);
+            SetLocalPress(0f);
             releaseTime = Time.time;
         });
         AddStep(0.5f, () =>
@@ -401,8 +412,8 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan step 3.2: the local press fires the action once per sweep to the bottom, hovering at the bottom or rising
-    // only part-way (above releaseFraction) doesn't fire again, and remotePress moves the button but never fires.
+    // Plan step 3.2: the local press (the debug fingertip) fires the action once per sweep to the bottom, and hovering
+    // at the bottom or rising only part-way (above releaseFraction) doesn't fire again.
     // The target is a ButtonActionExample created for the test (the scene gets its own in step 7.2); presses are
     // counted from its "[ButtonActionExample] pressed" log line.
     static void AddTriggerTest()
@@ -416,6 +427,7 @@ public static class PushButtonPlayModeTests
             if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
             if (!SetUpActionTarget(name)) { button = null; return; }
             Check(name + " armed at start", (bool)button.GetProgramVariable("armed"), "not armed");
+            SetLocalPress(0f);
         });
         AddSweepSteps(name + " sweep 1", 1, settle);
         AddSweepSteps(name + " sweep 2", 2, settle);
@@ -441,33 +453,181 @@ public static class PushButtonPlayModeTests
             SetLocalPress(0f);
         });
 
-        // remotePress alone moves the button to the stop but never fires.
-        AddStep(settle, () =>
-        {
-            if (button == null) return;
-            Check(name + " re-armed before remote", (bool)button.GetProgramVariable("armed"), "not armed");
-            button.SetProgramVariable("remotePress", 0.03f);
-        });
-        AddStep(settle, () =>
-        {
-            if (button == null) return;
-            float travel = (float)button.GetProgramVariable("travelDistance");
-            float press = (float)button.GetProgramVariable("pressAmount");
-            Check(name + " remote moves button to travel", Mathf.Abs(press - travel) < 1e-6f, "press " + press.ToString("F5"));
-            CheckActionCount(name + " remote never fires", 3);
-            Check(name + " remote leaves it armed", (bool)button.GetProgramVariable("armed"), "disarmed");
-            button.SetProgramVariable("remotePress", 0f);
-        });
+        // A remote player's press moving the button without firing is checked in AddRemotePressTest.
         AddStep(0.5f, () =>
         {
             if (button != null)
             {
+                Check(name + " re-armed at the end", (bool)button.GetProgramVariable("armed"), "not armed");
                 CheckActionCount(name + " total presses", 3);
                 float press = (float)button.GetProgramVariable("pressAmount");
                 Check(name + " back at rest", press == 0f, "press " + press.ToString("F5"));
             }
             TearDownActionTarget(name);
         });
+    }
+
+    // Plan step 5.3: the debug fingertip pushed in from the front presses the button by its depth past the face (plus
+    // its radius), stops it at travelDistance and fires once; pulling out and pushing in again fires again. Entering
+    // from the side or the back never engages, leaving sideways disengages, and the footprint is grown by the radius.
+    static void AddEngagementTest()
+    {
+        const string name = "engagement";
+        const float settle = 0.3f;
+        float halfU = 0f;
+        float radius = 0f;
+        float travel = 0f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            if (!SetUpActionTarget(name)) { button = null; return; }
+            halfU = (float)button.GetProgramVariable("footprintHalfU");
+            radius = (float)button.GetProgramVariable("fingertipRadius");
+            travel = (float)button.GetProgramVariable("travelDistance");
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " in front", false, true, 0f);
+            PlaceDebugTip(travel * 0.5f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " half-way in", true, false, travel * 0.5f);
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " half-way button press", Mathf.Abs(press - travel * 0.5f) < Tolerance, "press " + press.ToString("F5"));
+            CheckButtonAtPress(name + " half-way position", press);
+            CheckActionCount(name + " half-way does not fire", 0);
+            PlaceDebugTip(0.03f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " pushed past the stop", true, false, travel);
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " stops at travelDistance", Mathf.Abs(press - travel) < 1e-6f, "press " + press.ToString("F5"));
+            CheckButtonAtPress(name + " stop position", press);
+            CheckActionCount(name + " fires at the stop", 1);
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " holding does not fire again", 1);
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " pulled out", false, true, 0f);
+            Check(name + " re-armed after pulling out", (bool)button.GetProgramVariable("armed"), "not armed");
+            PlaceDebugTip(0.03f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " pushed again", true, false, travel);
+            CheckActionCount(name + " fires again", 2);
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+
+        // Side entry: past the face but outside the footprint, then slid in.
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            PlaceDebugTip(0.01f, halfU + radius + 0.01f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " beside the button", false, false, 0f);
+            PlaceDebugTip(0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " slid in from the side", false, false, 0f);
+            // Back entry: from behind the button, moving towards the face.
+            PlaceDebugTip(0.1f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " behind the button", false, false, 0f);
+            PlaceDebugTip(0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " came in from the back", false, false, 0f);
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " side and back entries leave it at rest", press == 0f, "press " + press.ToString("F5"));
+            CheckActionCount(name + " side and back entries do not fire", 2);
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+
+        // Leaving sideways disengages, and sliding back in doesn't re-engage.
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            PlaceDebugTip(travel * 0.5f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " engaged before leaving sideways", true, false, travel * 0.5f);
+            PlaceDebugTip(travel * 0.5f, halfU + radius + 0.01f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " left sideways", false, false, 0f);
+            PlaceDebugTip(travel * 0.5f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " slid back in", false, false, 0f);
+            // The footprint is grown by the radius: a tip just past the edge but within its radius still presses.
+            PlaceDebugTip(-0.01f, halfU + radius * 0.5f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " in front, over the edge", false, true, 0f);
+            PlaceDebugTip(travel * 0.5f, halfU + radius * 0.5f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " presses within its radius of the edge", true, false, travel * 0.5f);
+            CheckActionCount(name + " still two presses", 2);
+            Check(name + " no remote press", (float)button.GetProgramVariable("remotePress") == 0f, "remotePress set");
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " back at rest", press == 0f, "press " + press.ToString("F5"));
+            Check(name + " armed at the end", (bool)button.GetProgramVariable("armed"), "not armed");
+            TearDownActionTarget(name);
+        });
+    }
+
+    // The debug fingertip's engagement state and the local press it gives.
+    static void CheckTip(string name, bool engaged, bool wasInFront, float localPress)
+    {
+        bool isEngaged = (bool)button.GetProgramVariable("debugEngaged");
+        bool isInFront = (bool)button.GetProgramVariable("debugWasInFront");
+        float press = (float)button.GetProgramVariable("localPress");
+        Debug.Log("[PushButtonTest] " + name + ": engaged " + isEngaged + ", in front " + isInFront + ", local press " + press.ToString("F4"));
+        Check(name + (engaged ? " engaged" : " not engaged"), isEngaged == engaged, "engaged " + isEngaged);
+        Check(name + (wasInFront ? " in front" : " not in front"), isInFront == wasInFront, "in front " + isInFront);
+        Check(name + " local press", Mathf.Abs(press - localPress) < Tolerance, "got " + press.ToString("F5") + ", expected " + localPress.ToString("F5"));
     }
 
     // Plan step 4.2: a ClientSim click (Interact through the button's ClientSimUdonHelper, as ClientSim's own
@@ -622,8 +782,10 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan step 5.1: the button tracks everyone in the instance and logs the count on each join and leave. Spawns two
-    // ClientSim remote players, removes one, and checks that per-fingertip state survives a refresh.
+    // Plan steps 5.1 and 5.3: the button tracks everyone in the instance and logs the count on each join and leave.
+    // Moves the button onto the local ClientSim avatar's left index fingertip so it engages for real (from in front,
+    // then half the travel in), spawns two ClientSim remote players, removes them one at a time, and checks the press
+    // survives every refresh.
     static void AddPlayerTrackingTest()
     {
         const string name = "player tracking";
@@ -632,11 +794,28 @@ public static class PushButtonPlayModeTests
             GameObject go = GameObject.Find(ButtonPath);
             button = go != null ? go.GetComponent<UdonBehaviour>() : null;
             if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
             CheckTrackedPlayers(name + " at start");
-            // Mark the local player's first fingertip so the refreshes below must carry it over.
-            bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
-            int local = System.Array.IndexOf((VRCPlayerApi[])button.GetProgramVariable("trackedPlayers"), Networking.LocalPlayer);
-            if (local >= 0) engaged[local * 4] = true;
+            savedParentPos = button.transform.parent.position;
+            if (!Check(name + ": local avatar has index bones", MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.02f), "no finger bones")) button = null;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            int slot = SlotOf(Networking.LocalPlayer, 0);
+            Check(name + " local tip in front", slot >= 0 && ((bool[])button.GetProgramVariable("fingertipWasInFront"))[slot], "not in front");
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, travel * 0.5f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckLocalFingertipKept(name + " before joins");
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float press = (float)button.GetProgramVariable("localPress");
+            Debug.Log("[PushButtonTest] " + name + ": local avatar fingertip press " + press.ToString("F4") + ", expected about " + (travel * 0.5f).ToString("F4"));
+            // The avatar's idle animation can move the finger a little between the editor's estimate and Udon's.
+            Check(name + " local avatar press half the travel", Mathf.Abs(press - travel * 0.5f) < 0.003f, "press " + press.ToString("F5"));
 
             trackingLogs = 0;
             lastTrackingLogCount = -1;
@@ -677,10 +856,82 @@ public static class PushButtonPlayModeTests
                 "got " + trackingLogs + " tracking logs, last " + lastTrackingLogCount);
             CheckTrackedPlayers(name + " after both left");
             CheckLocalFingertipKept(name + " after both left");
-            // Clear the marker so later code sees a clean state.
-            bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
-            for (int i = 0; i < engaged.Length; i++) engaged[i] = false;
             Debug.Log("[PushButtonTest] " + name + ": " + trackingLogs + " tracking logs, now " + VRCPlayerApi.GetPlayerCount() + " players");
+            button.transform.parent.position = savedParentPos;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            int slot = SlotOf(Networking.LocalPlayer, 0);
+            Check(name + " released once the button moves away", slot >= 0 && !((bool[])button.GetProgramVariable("fingertipEngaged"))[slot]
+                && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
+        });
+    }
+
+    // Plan step 5.3: a remote player's fingertip feeds remotePress, which moves the button but never fires. Spawns a
+    // ClientSim remote player, moves the local player 1.5 m aside so only the remote fingertip is near, and moves the
+    // button onto the remote avatar's left index fingertip: in front, then 0.03 m in (past the stop).
+    static void AddRemotePressTest()
+    {
+        const string name = "remote press";
+        const string remoteName = "PushButtonTest Remote C";
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            if (!SetUpActionTarget(name)) { button = null; return; }
+            ClientSimMain.SpawnRemotePlayer(remoteName);
+            VRCPlayerApi localPlayer = Networking.LocalPlayer;
+            savedPlayerPos = localPlayer.GetPosition();
+            savedPlayerRot = localPlayer.GetRotation();
+            localPlayer.TeleportTo(savedPlayerPos + new Vector3(1.5f, 0f, 0f), savedPlayerRot);
+            savedParentPos = button.transform.parent.position;
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            if (!Check(name + ": remote spawned and tracked", remote != null && SlotOf(remote, 0) >= 0, "not tracked")) return;
+            Check(name + ": remote avatar has index bones", MoveButtonOntoLeftIndex(remote, -0.02f), "no finger bones");
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            if (remote == null) return;
+            int slot = SlotOf(remote, 0);
+            Check(name + " remote tip in front", slot >= 0 && ((bool[])button.GetProgramVariable("fingertipWasInFront"))[slot], "not in front");
+            MoveButtonOntoLeftIndex(remote, 0.03f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            if (remote == null) return;
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float remotePress = (float)button.GetProgramVariable("remotePress");
+            float localPress = (float)button.GetProgramVariable("localPress");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Debug.Log("[PushButtonTest] " + name + ": remote press " + remotePress.ToString("F4") + ", local press " + localPress.ToString("F4") + ", button " + press.ToString("F4"));
+            int slot = SlotOf(remote, 0);
+            Check(name + " remote tip engaged", slot >= 0 && ((bool[])button.GetProgramVariable("fingertipEngaged"))[slot], "not engaged");
+            Check(name + " remote press stops at travel", Mathf.Abs(remotePress - travel) < 1e-6f, "remotePress " + remotePress.ToString("F5"));
+            Check(name + " no local press", localPress == 0f, "localPress " + localPress.ToString("F5"));
+            Check(name + " moves the button to the stop", Mathf.Abs(press - travel) < 1e-6f, "press " + press.ToString("F5"));
+            CheckActionCount(name + " never fires", 0);
+            Check(name + " stays armed", (bool)button.GetProgramVariable("armed"), "disarmed");
+            button.transform.parent.position = savedParentPos;
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            Check(name + " released once the button moves away", (float)button.GetProgramVariable("remotePress") == 0f, "still pressed");
+            CheckActionCount(name + " no fire after release", 0);
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            if (remote != null) ClientSimMain.RemovePlayer(remote);
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
+            TearDownActionTarget(name);
         });
     }
 
@@ -799,12 +1050,80 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Sets the temporary local press to a fraction of travelDistance.
+    // Drives the local press with the debug fingertip: 0 puts it 1 cm in front of the face (disengaging it), anything
+    // else pushes it (still centred in the footprint) to that fraction of travelDistance.
     static void SetLocalPress(float fraction)
     {
         if (button == null) return;
         float travel = (float)button.GetProgramVariable("travelDistance");
-        button.SetProgramVariable("debugLocalPress", travel * fraction);
+        PlaceDebugTip(fraction > 0f ? travel * fraction : -0.01f, 0f, 0f);
+    }
+
+    // Puts the debug fingertip (created and assigned to debugFingertip on first use) where its press would be `press`
+    // meters (negative: in front of the face), offset u and v meters from the footprint centre, in the rest frame.
+    static void PlaceDebugTip(float press, float u, float v)
+    {
+        if (button == null) return;
+        if (debugTip == null)
+        {
+            debugTip = new GameObject("PushButtonTestFingertip");
+            button.SetProgramVariable("debugFingertip", debugTip.transform);
+        }
+        debugTip.transform.position = RestFramePoint(press, (float)button.GetProgramVariable("fingertipRadius"), u, v);
+    }
+
+    // Clears debugFingertip and destroys the test fingertip, so it can't press the button once the button moves.
+    static void RemoveDebugTip()
+    {
+        if (button != null) button.SetProgramVariable("debugFingertip", null);
+        if (debugTip != null) Object.Destroy(debugTip);
+        debugTip = null;
+    }
+
+    // The world point where a fingertip of the given radius would press `press` meters, offset u and v from the
+    // footprint centre, with the button's rest pose rebuilt from its parent now.
+    static Vector3 RestFramePoint(float press, float radius, float u, float v)
+    {
+        Vector3 restWorld;
+        Quaternion restRot;
+        RestPoseNow(out restWorld, out restRot);
+        Vector3 axis = (Vector3)button.GetProgramVariable("pressAxis");
+        Vector3 axisU = (Vector3)button.GetProgramVariable("lateralAxisU");
+        Vector3 axisV = (Vector3)button.GetProgramVariable("lateralAxisV");
+        float centerU = (float)button.GetProgramVariable("footprintCenterU");
+        float centerV = (float)button.GetProgramVariable("footprintCenterV");
+        float face = (float)button.GetProgramVariable("frontFaceOffset");
+        Vector3 local = axis * (press - face - radius) + axisU * (centerU + u) + axisV * (centerV + v);
+        return restWorld + restRot * local;
+    }
+
+    static void RestPoseNow(out Vector3 restWorld, out Quaternion restRot)
+    {
+        Transform parent = button.transform.parent;
+        Vector3 restLocal = (Vector3)button.GetProgramVariable("restLocalPosition");
+        Quaternion restLocalRot = (Quaternion)button.GetProgramVariable("restLocalRotation");
+        restWorld = parent != null ? parent.TransformPoint(restLocal) : restLocal;
+        restRot = parent != null ? parent.rotation * restLocalRot : restLocalRot;
+    }
+
+    // Moves the button's parent so the player's left index fingertip (estimated from their bones, as Udon does) would
+    // press `press` meters, centred in the footprint. Returns false if the avatar lacks the finger bones.
+    static bool MoveButtonOntoLeftIndex(VRCPlayerApi player, float press)
+    {
+        Vector3 d = player.GetBonePosition(HumanBodyBones.LeftIndexDistal);
+        Vector3 i = player.GetBonePosition(HumanBodyBones.LeftIndexIntermediate);
+        if (d == Vector3.zero || i == Vector3.zero) return false;
+        Vector3 tip = d + (d - i) * 0.8f;
+        float eyeHeight = player.GetAvatarEyeHeightAsMeters();
+        float radius = (float)button.GetProgramVariable("fingertipRadius") * (eyeHeight > 0f ? eyeHeight / 1.6f : 1f);
+        button.transform.parent.position += tip - RestFramePoint(press, radius, 0f, 0f);
+        return true;
+    }
+
+    static int SlotOf(VRCPlayerApi player, int fingertip)
+    {
+        int index = System.Array.IndexOf((VRCPlayerApi[])button.GetProgramVariable("trackedPlayers"), player);
+        return index < 0 ? -1 : index * 4 + fingertip;
     }
 
     static void CountActionLogs(string message, string stackTrace, LogType type)

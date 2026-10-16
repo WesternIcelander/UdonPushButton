@@ -53,10 +53,6 @@ public class PushButton : UdonSharpBehaviour
     [Header("Debug")]
     [Tooltip("Editor only: acts as a local fingertip for testing without a headset. Ignored in builds.")]
     public Transform debugFingertip;
-    // TEMP (plan step 3.1): stands in for the local fingertip press. Removed in step 5.3.
-    [Tooltip("Temporary: local press amount in meters.")]
-    [Range(0f, 0.03f)]
-    public float debugLocalPress;
 
     // Rest pose relative to the parent, captured once in Start.
     private Vector3 restLocalPosition;
@@ -116,6 +112,12 @@ public class PushButton : UdonSharpBehaviour
     private Vector3[] fingertipPositions = new Vector3[FingertipsPerPlayer];
     private bool[] fingertipValid = new bool[FingertipsPerPlayer];
     private float fingertipScaledRadius;
+    // Engagement state of the debug fingertip, which isn't a tracked player's slot.
+    private bool debugEngaged;
+    private bool debugWasInFront;
+    // One fingertip's engagement state while EvaluateFingertip updates it (UdonSharp has no ref parameters).
+    private bool tipEngaged;
+    private bool tipWasInFront;
 
     private void Start()
     {
@@ -300,16 +302,82 @@ public class PushButton : UdonSharpBehaviour
     private void Update()
     {
         UpdateRestWorldPose();
-        // TEMP (plan step 3.1): replaced by the local fingertips in step 5.3.
-        localPress = debugLocalPress;
-        // TEMP (plan step 5.2): exposes the local player's fingertips to the tests. Replaced by the per-player loop in step 5.3.
-        VRCPlayerApi localPlayer = Networking.LocalPlayer;
-        if (Utilities.IsValid(localPlayer)) GetFingertips(localPlayer);
+        UpdateFingertipPresses();
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
         UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
         UpdatePressAmount();
         ApplyPress(pressAmount);
+    }
+
+    /// <summary>
+    /// Sets localPress from the local player's fingertips (and the debug fingertip) and remotePress from everyone
+    /// else's: the deepest press of any engaged fingertip.
+    /// </summary>
+    private void UpdateFingertipPresses()
+    {
+        float local = 0f;
+        float remote = 0f;
+        Quaternion toRest = Quaternion.Inverse(restWorldRot);
+        for (int i = 0; i < trackedPlayers.Length; i++)
+        {
+            VRCPlayerApi player = trackedPlayers[i];
+            bool valid = Utilities.IsValid(player);
+            if (valid) GetFingertips(player);
+            for (int f = 0; f < FingertipsPerPlayer; f++)
+            {
+                int slot = i * FingertipsPerPlayer + f;
+                if (!valid || !fingertipValid[f])
+                {
+                    fingertipEngaged[slot] = false;
+                    fingertipWasInFront[slot] = false;
+                    continue;
+                }
+                tipEngaged = fingertipEngaged[slot];
+                tipWasInFront = fingertipWasInFront[slot];
+                float press = EvaluateFingertip(toRest, fingertipPositions[f], fingertipScaledRadius);
+                fingertipEngaged[slot] = tipEngaged;
+                fingertipWasInFront[slot] = tipWasInFront;
+                if (player.isLocal) local = Mathf.Max(local, press);
+                else remote = Mathf.Max(remote, press);
+            }
+        }
+
+        if (debugFingertip != null)
+        {
+            tipEngaged = debugEngaged;
+            tipWasInFront = debugWasInFront;
+            local = Mathf.Max(local, EvaluateFingertip(toRest, debugFingertip.position, fingertipRadius));
+            debugEngaged = tipEngaged;
+            debugWasInFront = tipWasInFront;
+        }
+        else
+        {
+            debugEngaged = false;
+            debugWasInFront = false;
+        }
+
+        localPress = local;
+        remotePress = remote;
+    }
+
+    /// <summary>
+    /// Updates one fingertip's engagement (tipEngaged, tipWasInFront) and returns its press in meters. Works in the
+    /// rest frame: a tip engages only if it was in front of the face and inside the footprint (grown by its radius)
+    /// on the previous frame and is now past the face. It stays engaged until it leaves the footprint sideways or
+    /// pulls back out in front, so entering from the side or the back never engages.
+    /// </summary>
+    private float EvaluateFingertip(Quaternion toRest, Vector3 tip, float radius)
+    {
+        Vector3 p = toRest * (tip - restWorldPos);
+        // How far the sphere's leading point is past the front face; positive means it touches or is past the face.
+        float press = Vector3.Dot(p, pressAxis) + frontFaceOffset + radius;
+        bool inFootprint = Mathf.Abs(Vector3.Dot(p, lateralAxisU) - footprintCenterU) <= footprintHalfU + radius
+            && Mathf.Abs(Vector3.Dot(p, lateralAxisV) - footprintCenterV) <= footprintHalfV + radius;
+        bool pastFace = press > 0f;
+        tipEngaged = inFootprint && pastFace && (tipEngaged || tipWasInFront);
+        tipWasInFront = inFootprint && !pastFace;
+        return tipEngaged ? Mathf.Clamp(press, 0f, travelDistance) : 0f;
     }
 
     /// <summary>
