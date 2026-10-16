@@ -145,9 +145,10 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 
 ### Phase 8: Verification
 
-- [ ] **8.1 Run the editor regression pass.**
+- [x] **8.1 Run the editor regression pass.**
   Repeat the checks from 4.2, 5.3 and 6.1 with the parent rotated to (35, 120, -70), and again with `ButtonPlate` disabled.
   *Check:* all pass in both setups.
+  Done: `AddClickTest` (4.2), `AddEngagementTest` (5.3) and `AddRangeGateTest` (6.1) now take an optional `setup` suffix for their check names. A new `AddRegressionPass(setup, plateActive)`, run twice after the inspector test, moves the parent to its scene position + (1, 0.5, -2) (1.8 m from the local player, well inside the 5 m gate), rotates it to (35, 120, -70), sets `ButtonPlate` active or disabled, checks the rest pose follows the parent and the button is at rest and armed, then runs those three tests again: first as ` (rotated parent)` with the plate on, then as ` (no plate)` with the parent still rotated and the plate disabled. `AddRegressionCleanup` then puts the parent and plate back. The scene pose is recorded in `AddSceneWiringTest`'s first step (`sceneParentPos`/`sceneParentRot`). No changes to `PushButton.cs`. UdonSharp compiled 10 scripts with no errors. Result: `[PushButtonTest] done: 627 passed, 0 failed` (up from 371), 0 errors. Both setups logged 2 action logs for the engagement and range gate passes, as in the unrotated run. The `play` timeout went from 120 to 180 s because the run now takes about 90 s.
 
 - [x] **8.2 Set up testing automation.** Done: the editor trigger is installed and `TestingAutomation.md` exists. Compile checks in every step can use the trigger's `refresh`. Play Mode tests should log `[PushButtonTest] done: N passed, M failed` (see `TestingAutomation.md`). The world ID and test instance URL are recorded there too.
 
