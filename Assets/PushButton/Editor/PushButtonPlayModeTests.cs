@@ -50,6 +50,10 @@ public static class PushButtonPlayModeTests
     // Player IDs that IsUserInVR reports as in VR (ClientSim players are all desktop), while the override is installed.
     static readonly HashSet<int> simulatedVRPlayers = new HashSet<int>();
     static bool isUserInVROverridden;
+    static int hapticCount;
+    static VRC_Pickup.PickupHand lastHapticHand;
+    static float lastHapticAmplitude;
+    static float savedHapticStrength;
 
     static PushButtonPlayModeTests()
     {
@@ -89,6 +93,7 @@ public static class PushButtonPlayModeTests
             EditorApplication.update -= Tick;
             Application.logMessageReceived -= CountActionLogs;
             Application.logMessageReceived -= CountTrackingLogs;
+            VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
         }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
@@ -114,6 +119,7 @@ public static class PushButtonPlayModeTests
         AddPlayerTrackingTest();
         AddRemotePressTest();
         AddVRFilterTest();
+        AddHapticsTest();
 
         nextStepTime = EditorApplication.timeSinceStartup + stepDelays[0];
         EditorApplication.update += Tick;
@@ -1064,6 +1070,99 @@ public static class PushButtonPlayModeTests
         });
     }
 
+    // Plan step 5.5: a local VR fingertip press that fires pulses the hand that pressed, at hapticStrength. A strength of
+    // 0 or the debug fingertip (no hand) fires without a pulse. ClientSim's own haptic handler only logs, and only with
+    // its logs turned on, so the test records the calls through VRCPlayerApi._PlayHapticEventInHand.
+    static void AddHapticsTest()
+    {
+        const string name = "haptics";
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            savedParentPos = button.transform.parent.position;
+            savedHapticStrength = (float)button.GetProgramVariable("hapticStrength");
+            if (!SetUpActionTarget(name)) { button = null; return; }
+            hapticCount = 0;
+            VRCPlayerApi._PlayHapticEventInHand += RecordHaptic;
+            SimulateVR(Networking.LocalPlayer, true);
+            if (!Check(name + ": local avatar has index bones", MoveButtonOntoIndex(Networking.LocalPlayer, -0.02f, true), "no finger bones")) button = null;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            MoveButtonOntoIndex(Networking.LocalPlayer, 0.03f, true);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " left press fires", 1);
+            CheckHaptics(name + " left press", 1, VRC_Pickup.PickupHand.Left, savedHapticStrength);
+            MoveButtonOntoIndex(Networking.LocalPlayer, -0.02f, false);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            MoveButtonOntoIndex(Networking.LocalPlayer, 0.03f, false);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " right press fires", 2);
+            CheckHaptics(name + " right press", 2, VRC_Pickup.PickupHand.Right, savedHapticStrength);
+            button.SetProgramVariable("hapticStrength", 0f);
+            MoveButtonOntoIndex(Networking.LocalPlayer, -0.02f, false);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            MoveButtonOntoIndex(Networking.LocalPlayer, 0.03f, false);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " strength 0 still fires", 3);
+            Check(name + " strength 0 plays no pulse", hapticCount == 2, hapticCount + " pulses");
+            button.SetProgramVariable("hapticStrength", savedHapticStrength);
+            button.transform.parent.position = savedParentPos;
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            PlaceDebugTip(0.03f, 0f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " debug fingertip fires", 4);
+            Check(name + " debug fingertip plays no pulse", hapticCount == 2, hapticCount + " pulses");
+            Debug.Log("[PushButtonTest] " + name + ": " + hapticCount + " pulses");
+            RemoveDebugTip();
+            VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
+            simulatedVRPlayers.Clear();
+            TearDownActionTarget(name);
+        });
+    }
+
+    static void RecordHaptic(VRCPlayerApi player, VRC_Pickup.PickupHand hand, float duration, float amplitude, float frequency)
+    {
+        if (player == null || !player.isLocal) return;
+        hapticCount++;
+        lastHapticHand = hand;
+        lastHapticAmplitude = amplitude;
+        Debug.Log("[PushButtonTest] haptic pulse: " + hand + ", " + duration + " s, amplitude " + amplitude + ", " + frequency + " Hz");
+    }
+
+    static void CheckHaptics(string name, int count, VRC_Pickup.PickupHand hand, float amplitude)
+    {
+        if (!Check(name + " pulses", hapticCount == count, hapticCount + " pulses, expected " + count)) return;
+        Check(name + " hand", lastHapticHand == hand, "pulsed " + lastHapticHand);
+        Check(name + " amplitude", Mathf.Abs(lastHapticAmplitude - amplitude) < 1e-6f, "amplitude " + lastHapticAmplitude);
+    }
+
     // A player's left index fingertip state in the tracked slots.
     static void CheckPlayerTip(string name, VRCPlayerApi player, bool engaged, bool wasInFront)
     {
@@ -1280,8 +1379,14 @@ public static class PushButtonPlayModeTests
     // press `press` meters, centred in the footprint. Returns false if the avatar lacks the finger bones.
     static bool MoveButtonOntoLeftIndex(VRCPlayerApi player, float press)
     {
-        Vector3 d = player.GetBonePosition(HumanBodyBones.LeftIndexDistal);
-        Vector3 i = player.GetBonePosition(HumanBodyBones.LeftIndexIntermediate);
+        return MoveButtonOntoIndex(player, press, true);
+    }
+
+    // The same for either hand's index fingertip.
+    static bool MoveButtonOntoIndex(VRCPlayerApi player, float press, bool left)
+    {
+        Vector3 d = player.GetBonePosition(left ? HumanBodyBones.LeftIndexDistal : HumanBodyBones.RightIndexDistal);
+        Vector3 i = player.GetBonePosition(left ? HumanBodyBones.LeftIndexIntermediate : HumanBodyBones.RightIndexIntermediate);
         if (d == Vector3.zero || i == Vector3.zero) return false;
         Vector3 tip = d + (d - i) * 0.8f;
         float eyeHeight = player.GetAvatarEyeHeightAsMeters();

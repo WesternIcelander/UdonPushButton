@@ -118,6 +118,11 @@ public class PushButton : UdonSharpBehaviour
     // One fingertip's engagement state while EvaluateFingertip updates it (UdonSharp has no ref parameters).
     private bool tipEngaged;
     private bool tipWasInFront;
+    // The hand of the local player's deepest pressing fingertip, or None when the debug fingertip (or nothing) leads.
+    private VRC_Pickup.PickupHand localPressHand = VRC_Pickup.PickupHand.None;
+    // The haptic pulse played in that hand when its press fires the action, at hapticStrength.
+    private const float HapticDuration = 0.08f;   // seconds
+    private const float HapticFrequency = 320f;   // Hz
 
     private void Start()
     {
@@ -315,12 +320,13 @@ public class PushButton : UdonSharpBehaviour
     /// else's: the deepest press of any engaged fingertip. Only players in VR press with their fingers, judged by
     /// each player's own IsUserInVR, so a remote VR player moves the button on every client, VR and desktop alike.
     /// Desktop and mobile players click instead, and their avatars' animated hands never press. The debug fingertip
-    /// counts as the local player's whatever their platform.
+    /// counts as the local player's whatever their platform. localPressHand records the hand of the deepest local press.
     /// </summary>
     private void UpdateFingertipPresses()
     {
         float local = 0f;
         float remote = 0f;
+        VRC_Pickup.PickupHand localHand = VRC_Pickup.PickupHand.None;
         Quaternion toRest = Quaternion.Inverse(restWorldRot);
         for (int i = 0; i < trackedPlayers.Length; i++)
         {
@@ -341,7 +347,15 @@ public class PushButton : UdonSharpBehaviour
                 float press = EvaluateFingertip(toRest, fingertipPositions[f], fingertipScaledRadius);
                 fingertipEngaged[slot] = tipEngaged;
                 fingertipWasInFront[slot] = tipWasInFront;
-                if (player.isLocal) local = Mathf.Max(local, press);
+                if (player.isLocal)
+                {
+                    if (press > local)
+                    {
+                        local = press;
+                        // Even slots are left-hand fingers, odd slots right-hand ones.
+                        localHand = f % 2 == 0 ? VRC_Pickup.PickupHand.Left : VRC_Pickup.PickupHand.Right;
+                    }
+                }
                 else remote = Mathf.Max(remote, press);
             }
         }
@@ -350,7 +364,12 @@ public class PushButton : UdonSharpBehaviour
         {
             tipEngaged = debugEngaged;
             tipWasInFront = debugWasInFront;
-            local = Mathf.Max(local, EvaluateFingertip(toRest, debugFingertip.position, fingertipRadius));
+            float debugPress = EvaluateFingertip(toRest, debugFingertip.position, fingertipRadius);
+            if (debugPress > local)
+            {
+                local = debugPress;
+                localHand = VRC_Pickup.PickupHand.None;
+            }
             debugEngaged = tipEngaged;
             debugWasInFront = tipWasInFront;
         }
@@ -362,6 +381,7 @@ public class PushButton : UdonSharpBehaviour
 
         localPress = local;
         remotePress = remote;
+        localPressHand = localHand;
     }
 
     /// <summary>
@@ -397,6 +417,7 @@ public class PushButton : UdonSharpBehaviour
             {
                 armed = false;
                 FireAction();
+                if (localPress >= fireDepth) PlayPressHaptics();
             }
         }
         else if (localAmount <= travelDistance * releaseFraction && localAmount < fireDepth)
@@ -421,6 +442,18 @@ public class PushButton : UdonSharpBehaviour
             return;
         }
         targetBehaviour.SendCustomEvent(eventName);
+    }
+
+    /// <summary>
+    /// Pulses the hand whose fingertip pressed the button, at hapticStrength. Skipped when the strength is 0, the local
+    /// player isn't in VR, or no hand pressed (a click, or the debug fingertip).
+    /// </summary>
+    private void PlayPressHaptics()
+    {
+        if (hapticStrength <= 0f || localPressHand == VRC_Pickup.PickupHand.None) return;
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        if (!Utilities.IsValid(localPlayer) || !localPlayer.IsUserInVR()) return;
+        localPlayer.PlayHapticEventInHand(localPressHand, HapticDuration, hapticStrength, HapticFrequency);
     }
 
     /// <summary>
