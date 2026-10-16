@@ -92,6 +92,11 @@ public class PushButton : UdonSharpBehaviour
     private const float FireTolerance = 0.0005f;
     // Whether the local player is in VR, set once in Start: VR players press with their fingers, everyone else clicks.
     private bool localIsVR;
+    // The click animation: clickPress runs 0 -> travelDistance over clickPressDuration from clickStartTime, holds the
+    // bottom for one frame, then releases and springs back. Only a local click (clickIsLocal) can fire the action.
+    private bool clickActive;
+    private bool clickIsLocal;
+    private float clickStartTime;
 
     private void Start()
     {
@@ -136,7 +141,38 @@ public class PushButton : UdonSharpBehaviour
 
     public override void Interact()
     {
-        // TEMP (plan step 4.1): the click animation comes in step 4.2. Interact has to exist for the tooltip to show.
+        StartClickAnimation(true);
+    }
+
+    /// <summary>
+    /// Starts (or restarts) the click animation, stamped with Time.time. Only a local click fires the action.
+    /// </summary>
+    private void StartClickAnimation(bool isLocal)
+    {
+        clickActive = true;
+        clickIsLocal = isLocal;
+        clickStartTime = Time.time;
+    }
+
+    /// <summary>
+    /// Drives clickPress from the running click animation: in over clickPressDuration, one frame at the bottom,
+    /// then released to 0 so the button springs back at returnSpeed.
+    /// </summary>
+    private void UpdateClickPress()
+    {
+        if (!clickActive)
+        {
+            clickPress = 0f;
+            return;
+        }
+        float progress = clickPressDuration > 0f ? (Time.time - clickStartTime) / clickPressDuration : 1f;
+        if (progress >= 1f)
+        {
+            clickPress = travelDistance;
+            clickActive = false;
+            return;
+        }
+        clickPress = travelDistance * Mathf.Max(progress, 0f);
     }
 
     private void Update()
@@ -144,14 +180,17 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         // TEMP (plan step 3.1): replaced by the local fingertips in step 5.3.
         localPress = debugLocalPress;
-        UpdateTrigger(Mathf.Clamp(localPress, 0f, travelDistance));
+        UpdateClickPress();
+        float localClickPress = clickIsLocal ? clickPress : 0f;
+        UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
         UpdatePressAmount();
         ApplyPress(pressAmount);
     }
 
     /// <summary>
     /// Fires the action when the local press reaches the bottom while armed, and re-arms once it rises back to
-    /// releaseFraction of the travel. Only local presses come through here, so remote presses never fire.
+    /// releaseFraction of the travel. Only local presses (fingertips and the local click) come through here, so
+    /// remote presses and networked clicks never fire.
     /// </summary>
     private void UpdateTrigger(float localAmount)
     {

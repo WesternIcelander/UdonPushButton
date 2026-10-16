@@ -38,6 +38,8 @@ public static class PushButtonPlayModeTests
     static UdonBehaviour savedTarget;
     static string savedEventName;
     static int actionCount;
+    static float savedClickDuration;
+    static float clickTime;
 
     static PushButtonPlayModeTests()
     {
@@ -90,6 +92,7 @@ public static class PushButtonPlayModeTests
         AddGizmoTest("gizmo unrotated");
         AddPressTest("press unrotated", true);
         AddTriggerTest();
+        AddClickTest();
         AddRestPoseTest();
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
@@ -316,22 +319,7 @@ public static class PushButtonPlayModeTests
             GameObject go = GameObject.Find(ButtonPath);
             button = go != null ? go.GetComponent<UdonBehaviour>() : null;
             if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
-            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>("Assets/PushButton/Examples/ButtonActionExample.asset");
-            if (!Check(name + ": load ButtonActionExample program", program != null && program.SerializedProgramAsset != null, "no program asset")) { button = null; return; }
-
-            actionTarget = new GameObject("PushButtonTestActionTarget");
-            actionTarget.SetActive(false);
-            UdonBehaviour target = actionTarget.AddComponent<UdonBehaviour>();
-            target.AssignProgramAndVariables(program.SerializedProgramAsset, new UdonVariableTable());
-            actionTarget.SetActive(true);
-            target.InitializeUdonContent();
-
-            savedTarget = (UdonBehaviour)button.GetProgramVariable("targetBehaviour");
-            savedEventName = (string)button.GetProgramVariable("eventName");
-            button.SetProgramVariable("targetBehaviour", target);
-            button.SetProgramVariable("eventName", "OnButtonPressed");
-            actionCount = 0;
-            Application.logMessageReceived += CountActionLogs;
+            if (!SetUpActionTarget(name)) { button = null; return; }
             Check(name + " armed at start", (bool)button.GetProgramVariable("armed"), "not armed");
         });
         AddSweepSteps(name + " sweep 1", 1, settle);
@@ -377,18 +365,137 @@ public static class PushButtonPlayModeTests
         });
         AddStep(0.5f, () =>
         {
-            Application.logMessageReceived -= CountActionLogs;
             if (button != null)
             {
                 CheckActionCount(name + " total presses", 3);
                 float press = (float)button.GetProgramVariable("pressAmount");
                 Check(name + " back at rest", press == 0f, "press " + press.ToString("F5"));
-                button.SetProgramVariable("targetBehaviour", savedTarget);
-                button.SetProgramVariable("eventName", savedEventName);
             }
-            if (actionTarget != null) Object.Destroy(actionTarget);
-            Debug.Log("[PushButtonTest] trigger: " + actionCount + " action logs");
+            TearDownActionTarget(name);
         });
+    }
+
+    // Plan step 4.2: a ClientSim click (Interact through the button's ClientSimUdonHelper, as ClientSim's own
+    // interact does) animates the button in over clickPressDuration and back at returnSpeed, and fires exactly once.
+    // The first click uses a 1 s press-in and a 0.01 m/s spring-back so the animation can be caught part-way.
+    static void AddClickTest()
+    {
+        const string name = "click";
+        const float slowClickDuration = 1f;
+        const float slowReturnSpeed = 0.01f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            ClientSimUdonHelper helper = go.GetComponent<ClientSimUdonHelper>();
+            if (!Check(name + ": ClientSim helper", helper != null, "no ClientSimUdonHelper on " + ButtonPath)) { button = null; return; }
+            if (!SetUpActionTarget(name)) { button = null; return; }
+            savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
+            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
+            button.SetProgramVariable("returnSpeed", slowReturnSpeed);
+            button.SetProgramVariable("clickPressDuration", slowClickDuration);
+            Check(name + " armed and at rest before clicking", (bool)button.GetProgramVariable("armed") && (float)button.GetProgramVariable("pressAmount") == 0f, "not ready");
+            helper.Interact();
+            clickTime = Time.time;
+        });
+        AddStep(0.4f, () =>
+        {
+            if (button == null) return;
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            float expected = travel * (Time.time - clickTime) / slowClickDuration;
+            Debug.Log("[PushButtonTest] " + name + ": press-in " + press.ToString("F4") + ", expected about " + expected.ToString("F4"));
+            Check(name + " animates in part-way", press > 0f && press < travel, "press " + press.ToString("F5"));
+            Check(name + " animates in over clickPressDuration", Mathf.Abs(press - expected) < travel * 0.1f,
+                "press " + press.ToString("F5") + ", expected " + expected.ToString("F5"));
+            CheckActionCount(name + " no fire before the bottom", 0);
+            CheckButtonAtPress(name + " press-in position", press);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            float clickPress = (float)button.GetProgramVariable("clickPress");
+            float released = Time.time - clickTime - slowClickDuration;
+            Debug.Log("[PushButtonTest] " + name + ": " + released.ToString("F2") + " s after the bottom, press " + press.ToString("F4"));
+            CheckActionCount(name + " fires once at the bottom", 1);
+            // Re-arming follows the local press, and the click releases it to 0 right after the bottom frame,
+            // so the button is armed again while it is still springing back.
+            Check(name + " re-armed once the click releases", (bool)button.GetProgramVariable("armed"), "not armed");
+            Check(name + " click released", !(bool)button.GetProgramVariable("clickActive") && clickPress == 0f,
+                "clickActive " + button.GetProgramVariable("clickActive") + ", clickPress " + clickPress.ToString("F5"));
+            Check(name + " springs back gradually", press > 0f && press < travel, "press " + press.ToString("F5"));
+            Check(name + " springs back at returnSpeed", Mathf.Abs(press - (travel - slowReturnSpeed * released)) < 0.002f,
+                "press " + press.ToString("F5") + ", expected " + (travel - slowReturnSpeed * released).ToString("F5"));
+            CheckButtonAtPress(name + " spring-back position", press);
+            button.SetProgramVariable("returnSpeed", savedReturnSpeed);
+            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " back at rest", press == 0f, "press " + press.ToString("F5"));
+            Check(name + " re-armed", (bool)button.GetProgramVariable("armed"), "not armed");
+            CheckActionCount(name + " no fire on the way back", 1);
+            // Second click at the default speeds.
+            GameObject.Find(ButtonPath).GetComponent<ClientSimUdonHelper>().Interact();
+        });
+        AddStep(0.6f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            CheckActionCount(name + " second click fires once", 2);
+            Check(name + " second click back at rest", press == 0f, "press " + press.ToString("F5"));
+            Check(name + " second click re-armed", (bool)button.GetProgramVariable("armed"), "not armed");
+            TearDownActionTarget(name);
+        });
+    }
+
+    static void CheckButtonAtPress(string name, float press)
+    {
+        Vector3 restWorld = (Vector3)button.GetProgramVariable("restWorldPos");
+        Quaternion restRot = (Quaternion)button.GetProgramVariable("restWorldRot");
+        Vector3 axis = (Vector3)button.GetProgramVariable("pressAxis");
+        Check(name, Near(button.transform.position, restWorld + restRot * (axis * press)), "got " + button.transform.position.ToString("F4"));
+    }
+
+    // Creates a ButtonActionExample target for the test (the scene gets its own in step 7.2), points the button at
+    // it with OnButtonPressed, and starts counting its "[ButtonActionExample] pressed" log lines.
+    static bool SetUpActionTarget(string name)
+    {
+        AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>("Assets/PushButton/Examples/ButtonActionExample.asset");
+        if (!Check(name + ": load ButtonActionExample program", program != null && program.SerializedProgramAsset != null, "no program asset")) return false;
+
+        actionTarget = new GameObject("PushButtonTestActionTarget");
+        actionTarget.SetActive(false);
+        UdonBehaviour target = actionTarget.AddComponent<UdonBehaviour>();
+        target.AssignProgramAndVariables(program.SerializedProgramAsset, new UdonVariableTable());
+        actionTarget.SetActive(true);
+        target.InitializeUdonContent();
+
+        savedTarget = (UdonBehaviour)button.GetProgramVariable("targetBehaviour");
+        savedEventName = (string)button.GetProgramVariable("eventName");
+        button.SetProgramVariable("targetBehaviour", target);
+        button.SetProgramVariable("eventName", "OnButtonPressed");
+        actionCount = 0;
+        Application.logMessageReceived += CountActionLogs;
+        return true;
+    }
+
+    // Restores the button's target and event name and destroys the test target.
+    static void TearDownActionTarget(string name)
+    {
+        Application.logMessageReceived -= CountActionLogs;
+        if (button != null)
+        {
+            button.SetProgramVariable("targetBehaviour", savedTarget);
+            button.SetProgramVariable("eventName", savedEventName);
+        }
+        if (actionTarget != null) Object.Destroy(actionTarget);
+        Debug.Log("[PushButtonTest] " + name + ": " + actionCount + " action logs");
     }
 
     // One sweep 0 -> bottom -> hover -> 0: fires once on reaching the bottom, not again while hovering, re-arms at 0.
