@@ -312,7 +312,10 @@ public class PushButton : UdonSharpBehaviour
 
     /// <summary>
     /// Sets localPress from the local player's fingertips (and the debug fingertip) and remotePress from everyone
-    /// else's: the deepest press of any engaged fingertip.
+    /// else's: the deepest press of any engaged fingertip. Only players in VR press with their fingers, judged by
+    /// each player's own IsUserInVR, so a remote VR player moves the button on every client, VR and desktop alike.
+    /// Desktop and mobile players click instead, and their avatars' animated hands never press. The debug fingertip
+    /// counts as the local player's whatever their platform.
     /// </summary>
     private void UpdateFingertipPresses()
     {
@@ -322,12 +325,12 @@ public class PushButton : UdonSharpBehaviour
         for (int i = 0; i < trackedPlayers.Length; i++)
         {
             VRCPlayerApi player = trackedPlayers[i];
-            bool valid = Utilities.IsValid(player);
-            if (valid) GetFingertips(player);
+            bool pressing = Utilities.IsValid(player) && player.IsUserInVR();
+            if (pressing) GetFingertips(player);
             for (int f = 0; f < FingertipsPerPlayer; f++)
             {
                 int slot = i * FingertipsPerPlayer + f;
-                if (!valid || !fingertipValid[f])
+                if (!pressing || !fingertipValid[f])
                 {
                     fingertipEngaged[slot] = false;
                     fingertipWasInFront[slot] = false;

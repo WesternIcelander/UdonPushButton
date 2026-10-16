@@ -47,6 +47,9 @@ public static class PushButtonPlayModeTests
     static Vector3[] tipsBeforeTeleport;
     static GameObject debugTip;
     static Vector3 savedParentPos;
+    // Player IDs that IsUserInVR reports as in VR (ClientSim players are all desktop), while the override is installed.
+    static readonly HashSet<int> simulatedVRPlayers = new HashSet<int>();
+    static bool isUserInVROverridden;
 
     static PushButtonPlayModeTests()
     {
@@ -86,6 +89,7 @@ public static class PushButtonPlayModeTests
             EditorApplication.update -= Tick;
             Application.logMessageReceived -= CountActionLogs;
             Application.logMessageReceived -= CountTrackingLogs;
+            RestoreIsUserInVR();
         }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
         SessionState.EraseBool(ArmedKey);
@@ -109,6 +113,7 @@ public static class PushButtonPlayModeTests
         AddGizmoTest("gizmo rotated parent");
         AddPlayerTrackingTest();
         AddRemotePressTest();
+        AddVRFilterTest();
 
         nextStepTime = EditorApplication.timeSinceStartup + stepDelays[0];
         EditorApplication.update += Tick;
@@ -194,6 +199,11 @@ public static class PushButtonPlayModeTests
     {
         const string name = "fingertips";
         Vector3 teleportOffset = new Vector3(1f, 0f, 0f);
+        // Only VR players' fingertips are estimated (plan step 5.4), and ClientSim's local player is on desktop.
+        AddStep(0.5f, () =>
+        {
+            if (Networking.LocalPlayer != null) SimulateVR(Networking.LocalPlayer, true);
+        });
         AddStep(0.5f, () =>
         {
             GameObject go = GameObject.Find(ButtonPath);
@@ -893,6 +903,7 @@ public static class PushButtonPlayModeTests
             if (button == null) return;
             VRCPlayerApi remote = FindPlayer(remoteName);
             if (!Check(name + ": remote spawned and tracked", remote != null && SlotOf(remote, 0) >= 0, "not tracked")) return;
+            SimulateVR(remote, true);
             Check(name + ": remote avatar has index bones", MoveButtonOntoLeftIndex(remote, -0.02f), "no finger bones");
         });
         AddStep(0.3f, () =>
@@ -933,6 +944,165 @@ public static class PushButtonPlayModeTests
             Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
             TearDownActionTarget(name);
         });
+    }
+
+    // Plan step 5.4: only players in VR press with their fingertips, judged by each player's own IsUserInVR. A local
+    // VR fingertip pressing half-way releases once the local player counts as desktop, and a desktop local fingertip
+    // never engages while the debug fingertip still presses. A desktop remote fingertip pushed past the stop does
+    // nothing until that remote player counts as VR.
+    static void AddVRFilterTest()
+    {
+        const string name = "vr filter";
+        const string remoteName = "PushButtonTest Remote D";
+        float travel = 0f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            travel = (float)button.GetProgramVariable("travelDistance");
+            savedParentPos = button.transform.parent.position;
+            SimulateVR(Networking.LocalPlayer, true);
+            if (!Check(name + ": local avatar has index bones", MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.02f), "no finger bones")) button = null;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, travel * 0.5f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckPlayerTip(name + " local VR tip", Networking.LocalPlayer, true, false);
+            float press = (float)button.GetProgramVariable("localPress");
+            Check(name + " local VR tip presses", Mathf.Abs(press - travel * 0.5f) < 0.003f, "localPress " + press.ToString("F5"));
+            SimulateVR(Networking.LocalPlayer, false);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckPlayerTip(name + " local desktop tip released", Networking.LocalPlayer, false, false);
+            Check(name + " no local press on desktop", (float)button.GetProgramVariable("localPress") == 0f, "localPress set");
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.02f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckPlayerTip(name + " local desktop tip in front ignored", Networking.LocalPlayer, false, false);
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, travel * 0.5f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckPlayerTip(name + " local desktop tip pushed in", Networking.LocalPlayer, false, false);
+            Check(name + " local desktop push does nothing", (float)button.GetProgramVariable("localPress") == 0f, "localPress set");
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            PlaceDebugTip(travel * 0.5f, 0f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " debug fingertip presses on desktop", true, false, travel * 0.5f);
+            RemoveDebugTip();
+            button.transform.parent.position = savedParentPos;
+            ClientSimMain.SpawnRemotePlayer(remoteName);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            if (!Check(name + ": remote spawned and tracked", remote != null && SlotOf(remote, 0) >= 0, "not tracked")) { button = null; return; }
+            Check(name + ": remote is on desktop", !remote.IsUserInVR(), "remote in VR");
+            Check(name + ": remote avatar has index bones", MoveButtonOntoLeftIndex(remote, -0.02f), "no finger bones");
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            MoveButtonOntoLeftIndex(FindPlayer(remoteName), 0.03f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            CheckPlayerTip(name + " remote desktop tip", remote, false, false);
+            float remotePress = (float)button.GetProgramVariable("remotePress");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Debug.Log("[PushButtonTest] " + name + ": desktop remote pushed in, remote press " + remotePress.ToString("F4") + ", button " + press.ToString("F4"));
+            Check(name + " remote desktop push does nothing", remotePress == 0f && press == 0f,
+                "remotePress " + remotePress.ToString("F5") + ", button " + press.ToString("F5"));
+            SimulateVR(remote, true);
+            MoveButtonOntoLeftIndex(remote, -0.02f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            CheckPlayerTip(name + " remote VR tip in front", remote, false, true);
+            MoveButtonOntoLeftIndex(remote, 0.03f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            CheckPlayerTip(name + " remote VR tip pushed in", remote, true, false);
+            float remotePress = (float)button.GetProgramVariable("remotePress");
+            Check(name + " remote VR push reaches the stop", Mathf.Abs(remotePress - travel) < 1e-6f, "remotePress " + remotePress.ToString("F5"));
+            button.transform.parent.position = savedParentPos;
+            ClientSimMain.RemovePlayer(remote);
+            simulatedVRPlayers.Clear();
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            Check(name + " released at the end", (float)button.GetProgramVariable("remotePress") == 0f
+                && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
+        });
+    }
+
+    // A player's left index fingertip state in the tracked slots.
+    static void CheckPlayerTip(string name, VRCPlayerApi player, bool engaged, bool wasInFront)
+    {
+        int slot = player != null ? SlotOf(player, 0) : -1;
+        if (!Check(name + " tracked", slot >= 0, "player not tracked")) return;
+        bool isEngaged = ((bool[])button.GetProgramVariable("fingertipEngaged"))[slot];
+        bool isInFront = ((bool[])button.GetProgramVariable("fingertipWasInFront"))[slot];
+        Debug.Log("[PushButtonTest] " + name + ": in VR " + player.IsUserInVR() + ", engaged " + isEngaged + ", in front " + isInFront);
+        Check(name + (engaged ? " engaged" : " not engaged"), isEngaged == engaged, "engaged " + isEngaged);
+        Check(name + (wasInFront ? " in front" : " not in front"), isInFront == wasInFront, "in front " + isInFront);
+    }
+
+    // Makes IsUserInVR report the player as in VR (or back on desktop), installing the override on first use.
+    // ClientSim answers IsUserInVR through VRCPlayerApi._IsUserInVR, and all its players are on desktop.
+    static void SimulateVR(VRCPlayerApi player, bool inVR)
+    {
+        if (!isUserInVROverridden)
+        {
+            VRCPlayerApi._IsUserInVR -= ClientSimPlayerManager.IsUserInVR;
+            VRCPlayerApi._IsUserInVR += SimulatedIsUserInVR;
+            isUserInVROverridden = true;
+        }
+        if (inVR) simulatedVRPlayers.Add(player.playerId);
+        else simulatedVRPlayers.Remove(player.playerId);
+    }
+
+    static bool SimulatedIsUserInVR(VRCPlayerApi player)
+    {
+        return simulatedVRPlayers.Contains(player.playerId) || ClientSimPlayerManager.IsUserInVR(player);
+    }
+
+    // Puts ClientSim's own IsUserInVR back, before ClientSim unhooks it as Play Mode ends.
+    static void RestoreIsUserInVR()
+    {
+        simulatedVRPlayers.Clear();
+        if (!isUserInVROverridden) return;
+        VRCPlayerApi._IsUserInVR -= SimulatedIsUserInVR;
+        VRCPlayerApi._IsUserInVR += ClientSimPlayerManager.IsUserInVR;
+        isUserInVROverridden = false;
     }
 
     // The tracked list holds exactly the valid players in the instance, with four fingertip slots each.
