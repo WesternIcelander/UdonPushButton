@@ -129,8 +129,6 @@ public class PushButton : UdonSharpBehaviour
     private const float HandEarlyOutDistance = 0.5f;   // meters
     // HandEarlyOutDistance plus the contact box's bounding radius, squared, measured from the box centre.
     private float handEarlyOutRangeSqr;
-    // TEMP (plan step 6.2): players skipped by the hand early-out on the last frame, for the Play Mode tests.
-    private int handEarlyOutSkips;
 
     private void Start()
     {
@@ -144,10 +142,6 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         ComputeContactBox(true);
         SetUpLocalInput();
-
-        // TEMP (plan step 2.1): remove once later steps use the rest pose.
-        Debug.Log("[PushButton] rest local " + restLocalPosition.ToString("F4") + " " + restLocalRotation.eulerAngles.ToString("F2")
-            + ", rest world " + restWorldPos.ToString("F4") + " " + restWorldRot.eulerAngles.ToString("F2"));
     }
 
     /// <summary>
@@ -222,9 +216,6 @@ public class PushButton : UdonSharpBehaviour
         trackedPlayers = players;
         fingertipEngaged = engaged;
         fingertipWasInFront = wasInFront;
-
-        // TEMP (plan step 5.1): remove once the fingertip steps use the tracked players.
-        Debug.Log("[PushButton] " + name + ": tracking " + count + " players");
     }
 
     /// <summary>
@@ -376,7 +367,6 @@ public class PushButton : UdonSharpBehaviour
         VRC_Pickup.PickupHand localHand = VRC_Pickup.PickupHand.None;
         Quaternion toRest = Quaternion.Inverse(restWorldRot);
         Vector3 boxCenter = restWorldPos + restWorldRot * contactCenter;
-        int skipped = 0;
         for (int i = 0; i < trackedPlayers.Length; i++)
         {
             VRCPlayerApi player = trackedPlayers[i];
@@ -385,7 +375,6 @@ public class PushButton : UdonSharpBehaviour
             if (pressing && !HandNear(player, HumanBodyBones.LeftHand, boxCenter) && !HandNear(player, HumanBodyBones.RightHand, boxCenter))
             {
                 pressing = false;
-                skipped++;
             }
             if (pressing) GetFingertips(player);
             for (int f = 0; f < FingertipsPerPlayer; f++)
@@ -437,7 +426,6 @@ public class PushButton : UdonSharpBehaviour
         localPress = local;
         remotePress = remote;
         localPressHand = localHand;
-        handEarlyOutSkips = skipped;
     }
 
     /// <summary>

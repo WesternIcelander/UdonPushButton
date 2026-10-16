@@ -17,7 +17,9 @@ using VRC.Udon.Common;
 public static class PushButtonPlayModeTests
 {
     const string ArmedKey = "PushButtonTest.armed";
-    const string ButtonPath = "Button/Button";
+    const string AssemblyName = "PushButtonAssembly";
+    const string ButtonPath = AssemblyName + "/Button";
+    const string ExampleProgramPath = "Assets/PushButton/Examples/ButtonActionExample.asset";
     const float Tolerance = 0.0001f;
 
     // A test is a list of steps, each run once after its delay (seconds since the previous step).
@@ -40,8 +42,6 @@ public static class PushButtonPlayModeTests
     static int actionCount;
     static float savedClickDuration;
     static float clickTime;
-    static int lastTrackingLogCount;
-    static int trackingLogs;
     static Vector3 savedPlayerPos;
     static Quaternion savedPlayerRot;
     static Vector3[] tipsBeforeTeleport;
@@ -67,23 +67,40 @@ public static class PushButtonPlayModeTests
         Debug.Log("[PushButtonTest] armed for the next Play Mode");
     }
 
-    [MenuItem("Tools/PushButton/Add PushButton To Scene Button")]
-    static void AddToSceneButton()
+    // Plan step 7.2: renames the parent to PushButtonAssembly and turns it 180° on Y to face the spawn, gives the child
+    // button a PushButton with travel 0.019 along local -Z, points it at a ButtonActionExample on the parent with
+    // OnButtonPressed, and saves the scene. Safe to run again.
+    [MenuItem("Tools/PushButton/Wire Up Scene")]
+    static void WireUpScene()
     {
         GameObject go = GameObject.Find(ButtonPath);
-        if (go == null)
+        if (go == null) go = GameObject.Find("Button/Button");
+        if (go == null || go.transform.parent == null)
         {
-            Debug.LogError("[PushButtonTest] no object at " + ButtonPath);
+            Debug.LogError("[PushButtonTest] no button at " + ButtonPath + " or Button/Button");
             return;
         }
-        if (go.GetComponent<PushButton>() != null)
-        {
-            Debug.Log("[PushButtonTest] " + ButtonPath + " already has a PushButton");
-            return;
-        }
-        UdonSharpUndo.AddComponent<PushButton>(go);
+        Transform parent = go.transform.parent;
+        Undo.RecordObjects(new Object[] { parent.gameObject, parent }, "Wire Up PushButton Scene");
+        parent.name = AssemblyName;
+        parent.localRotation = Quaternion.Euler(0f, 180f, 0f);
+
+        PushButton pushButton = go.GetComponent<PushButton>();
+        if (pushButton == null) pushButton = UdonSharpUndo.AddComponent<PushButton>(go);
+        ButtonActionExample example = parent.GetComponent<ButtonActionExample>();
+        if (example == null) example = UdonSharpUndo.AddComponent<ButtonActionExample>(parent.gameObject);
+
+        SerializedObject serialized = new SerializedObject(pushButton);
+        serialized.FindProperty("localPressAxis").vector3Value = new Vector3(0f, 0f, -1f);
+        serialized.FindProperty("travelDistance").floatValue = 0.019f;
+        serialized.FindProperty("targetBehaviour").objectReferenceValue = UdonSharpEditorUtility.GetBackingUdonBehaviour(example);
+        serialized.FindProperty("eventName").stringValue = "OnButtonPressed";
+        serialized.ApplyModifiedProperties();
+        UdonSharpEditorUtility.CopyProxyToUdon(pushButton);
+
         EditorSceneManager.MarkSceneDirty(go.scene);
-        Debug.Log("[PushButtonTest] added PushButton to " + ButtonPath);
+        EditorSceneManager.SaveScene(go.scene);
+        Debug.Log("[PushButtonTest] wired up " + ButtonPath + " and saved " + go.scene.name);
     }
 
     static void OnPlayModeStateChanged(PlayModeStateChange change)
@@ -92,7 +109,6 @@ public static class PushButtonPlayModeTests
         {
             EditorApplication.update -= Tick;
             Application.logMessageReceived -= CountActionLogs;
-            Application.logMessageReceived -= CountTrackingLogs;
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
         }
@@ -104,6 +120,7 @@ public static class PushButtonPlayModeTests
         stepIndex = 0;
         passed = 0;
         failed = 0;
+        AddSceneWiringTest();
         AddContactBoxTest();
         AddInputModeTest();
         AddFingertipTest();
@@ -146,6 +163,45 @@ public static class PushButtonPlayModeTests
     {
         stepDelays.Add(delay);
         steps.Add(step);
+    }
+
+    // Plan step 7.2: the saved scene is wired up (parent turned to face the spawn, travel 0.019 along local -Z, the
+    // ButtonActionExample on the parent called with OnButtonPressed), and a ClientSim desktop click logs once.
+    static void AddSceneWiringTest()
+    {
+        const string name = "scene wiring";
+        AddStep(2f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            Transform parent = go.transform.parent;
+            Check(name + " parent faces the spawn", Quaternion.Angle(parent.rotation, Quaternion.Euler(0f, 180f, 0f)) < 0.01f,
+                "rotation " + parent.eulerAngles.ToString("F2"));
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            Check(name + " travel 0.019", Mathf.Abs(travel - 0.019f) < 1e-6f, "got " + travel.ToString("F5"));
+            Vector3 axis = (Vector3)button.GetProgramVariable("localPressAxis");
+            Check(name + " local press axis", Near(axis, new Vector3(0f, 0f, -1f)), "got " + axis.ToString("F4"));
+
+            UdonBehaviour target = (UdonBehaviour)button.GetProgramVariable("targetBehaviour");
+            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
+            Check(name + " target is the ButtonActionExample on the parent", target != null && target.gameObject == parent.gameObject
+                && target.programSource == program, target == null ? "no target" : "got " + target.gameObject.name + " running " + target.programSource);
+            string eventName = (string)button.GetProgramVariable("eventName");
+            Check(name + " event OnButtonPressed", eventName == "OnButtonPressed", "got \"" + eventName + "\"");
+
+            actionCount = 0;
+            Application.logMessageReceived += CountActionLogs;
+            go.GetComponent<ClientSimUdonHelper>().Interact();
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Application.logMessageReceived -= CountActionLogs;
+            Debug.Log("[PushButtonTest] " + name + ": desktop click, " + actionCount + " action logs");
+            CheckActionCount(name + " desktop click logs once", 1);
+            Check(name + " back at rest", (float)button.GetProgramVariable("pressAmount") == 0f, "still pressed");
+        });
     }
 
     // Plan step 2.2: the contact box comes from the BoxCollider, converted to meters.
@@ -321,7 +377,7 @@ public static class PushButtonPlayModeTests
                 "got " + (editor != null ? editor.GetType().Name : "null") + " hosting " + (userEditor != null ? userEditor.GetType().Name : "null"));
             if (editor != null) Object.DestroyImmediate(editor);
 
-            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>("Assets/PushButton/Examples/ButtonActionExample.asset");
+            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
             if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
             GameObject holder = new GameObject("PushButtonTestInspectorTarget");
             holder.SetActive(false);
@@ -412,7 +468,8 @@ public static class PushButtonPlayModeTests
     // Plan steps 2.3 and 3.1: the button moves along the press axis from the world rest pose, jumps straight to a
     // deeper press, never goes past travelDistance, and springs back at returnSpeed. returnSpeed is lowered to
     // 0.01 m/s during the test so the spring-back is slow enough to catch half-way.
-    // With the parent unrotated and travel 0.019, full travel puts the button 1 mm in front of the plate, (0, 1, 0.011).
+    // With the scene's parent (turned only on Y) and travel 0.019, full travel puts the button 1 mm in front of the plate,
+    // at (0, 0, 0.011) in the parent.
     // The press comes from the debug fingertip, pushed from in front of the face to 0.03 m past it in one frame.
     static void AddPressTest(string name, bool checkAbsolute)
     {
@@ -451,7 +508,7 @@ public static class PushButtonPlayModeTests
             Check(name + " position", Near(actual, expected), "got " + actual.ToString("F4") + ", expected " + expected.ToString("F4"));
             Check(name + " along parent -Z", Near(offsetInParent, new Vector3(0f, 0f, -travel)), "offset " + offsetInParent.ToString("F4"));
             if (checkAbsolute)
-                Check(name + " 1 mm in front of plate", Near(actual, new Vector3(0f, 1f, 0.011f)), "got " + actual.ToString("F4"));
+                Check(name + " 1 mm in front of plate", Near(actual, buttonParent.TransformPoint(new Vector3(0f, 0f, 0.011f))), "got " + actual.ToString("F4"));
             SetLocalPress(0f);
             releaseTime = Time.time;
         });
@@ -485,7 +542,7 @@ public static class PushButtonPlayModeTests
 
     // Plan step 3.2: the local press (the debug fingertip) fires the action once per sweep to the bottom, and hovering
     // at the bottom or rising only part-way (above releaseFraction) doesn't fire again.
-    // The target is a ButtonActionExample created for the test (the scene gets its own in step 7.2); presses are
+    // The target is a ButtonActionExample created for the test (not the scene's own); presses are
     // counted from its "[ButtonActionExample] pressed" log line.
     static void AddTriggerTest()
     {
@@ -983,7 +1040,7 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan steps 5.1 and 5.3: the button tracks everyone in the instance and logs the count on each join and leave.
+    // Plan steps 5.1 and 5.3: the button tracks everyone in the instance, and keeps the list current on each join and leave.
     // Moves the button onto the local ClientSim avatar's left index fingertip so it engages for real (from in front,
     // then half the travel in), spawns two ClientSim remote players, removes them one at a time, and checks the press
     // survives every refresh.
@@ -1018,18 +1075,12 @@ public static class PushButtonPlayModeTests
             // The avatar's idle animation can move the finger a little between the editor's estimate and Udon's.
             Check(name + " local avatar press half the travel", Mathf.Abs(press - travel * 0.5f) < 0.003f, "press " + press.ToString("F5"));
 
-            trackingLogs = 0;
-            lastTrackingLogCount = -1;
-            Application.logMessageReceived += CountTrackingLogs;
             ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote A");
             ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote B");
         });
         AddStep(1f, () =>
         {
             if (button == null) return;
-            Check(name + " join logs", trackingLogs == 2, "got " + trackingLogs + " tracking logs");
-            Check(name + " join log count", lastTrackingLogCount == VRCPlayerApi.GetPlayerCount(),
-                "logged " + lastTrackingLogCount + ", " + VRCPlayerApi.GetPlayerCount() + " players");
             CheckTrackedPlayers(name + " after two joins");
             CheckLocalFingertipKept(name + " after joins");
             VRCPlayerApi remoteA = FindPlayer("PushButtonTest Remote A");
@@ -1039,9 +1090,6 @@ public static class PushButtonPlayModeTests
         AddStep(1f, () =>
         {
             if (button == null) return;
-            Check(name + " leave log", trackingLogs == 3, "got " + trackingLogs + " tracking logs");
-            Check(name + " leave log count", lastTrackingLogCount == VRCPlayerApi.GetPlayerCount(),
-                "logged " + lastTrackingLogCount + ", " + VRCPlayerApi.GetPlayerCount() + " players");
             CheckTrackedPlayers(name + " after a leave");
             CheckLocalFingertipKept(name + " after leave");
             VRCPlayerApi remoteB = FindPlayer("PushButtonTest Remote B");
@@ -1052,12 +1100,9 @@ public static class PushButtonPlayModeTests
         AddStep(1f, () =>
         {
             if (button == null) return;
-            Application.logMessageReceived -= CountTrackingLogs;
-            Check(name + " second leave log", trackingLogs == 4 && lastTrackingLogCount == VRCPlayerApi.GetPlayerCount(),
-                "got " + trackingLogs + " tracking logs, last " + lastTrackingLogCount);
             CheckTrackedPlayers(name + " after both left");
             CheckLocalFingertipKept(name + " after both left");
-            Debug.Log("[PushButtonTest] " + name + ": " + trackingLogs + " tracking logs, now " + VRCPlayerApi.GetPlayerCount() + " players");
+            Debug.Log("[PushButtonTest] " + name + ": now " + VRCPlayerApi.GetPlayerCount() + " players");
             button.transform.parent.position = savedParentPos;
         });
         AddStep(0.3f, () =>
@@ -1332,9 +1377,8 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan step 6.2: a VR player whose hands are both more than 0.5 m from the button is skipped (counted in the
-    // temporary handEarlyOutSkips) and their fingertip state cleared, while a player near the button presses as before.
-    // Desktop players aren't counted, as they never reach the hand check. A remote VR player is spawned and the local
+    // Plan step 6.2: a VR player whose hands are both more than 0.5 m from the button is skipped and their fingertip
+    // state cleared, while a player near the button presses as before. A remote VR player is spawned and the local
     // VR player stands 1.5 m aside, so the button can sit at one player's hand, the other's, or away from both.
     static void AddHandEarlyOutTest()
     {
@@ -1367,14 +1411,12 @@ public static class PushButtonPlayModeTests
         AddStep(0.3f, () =>
         {
             if (button == null) return;
-            CheckSkips(name + " at the remote's hand", 1);
             CheckPlayerTip(name + " remote tip near", FindPlayer(remoteName), false, true);
             MoveButtonOntoLeftIndex(FindPlayer(remoteName), 0.03f);
         });
         AddStep(0.3f, () =>
         {
             if (button == null) return;
-            CheckSkips(name + " remote pressing", 1);
             CheckPlayerTip(name + " remote tip pushed in", FindPlayer(remoteName), true, false);
             float remotePress = (float)button.GetProgramVariable("remotePress");
             Check(name + " remote press unchanged", Mathf.Abs(remotePress - travel) < 1e-6f, "remotePress " + remotePress.ToString("F5"));
@@ -1383,7 +1425,6 @@ public static class PushButtonPlayModeTests
         AddStep(0.3f, () =>
         {
             if (button == null) return;
-            CheckSkips(name + " at the local player's hand", 1);
             CheckPlayerTip(name + " remote tip released when far", FindPlayer(remoteName), false, false);
             CheckPlayerTip(name + " local tip near", Networking.LocalPlayer, false, true);
             Check(name + " remote press cleared", (float)button.GetProgramVariable("remotePress") == 0f, "still pressed");
@@ -1401,7 +1442,6 @@ public static class PushButtonPlayModeTests
         AddStep(0.3f, () =>
         {
             if (button == null) return;
-            CheckSkips(name + " away from both", 2);
             CheckPlayerTip(name + " local tip released when far", Networking.LocalPlayer, false, false);
             Check(name + " local press cleared", (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
             Check(name + " in range", !(bool)button.GetProgramVariable("outOfRange"), "range gate closed");
@@ -1410,7 +1450,6 @@ public static class PushButtonPlayModeTests
         AddStep(0.3f, () =>
         {
             if (button == null) return;
-            CheckSkips(name + " desktop remote not counted", 1);
             button.transform.parent.position = savedParentPos;
             ClientSimMain.RemovePlayer(FindPlayer(remoteName));
             Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
@@ -1419,17 +1458,9 @@ public static class PushButtonPlayModeTests
         AddStep(0.5f, () =>
         {
             if (button == null) return;
-            CheckSkips(name + " desktop only at the end", 0);
             Check(name + " released at the end", (float)button.GetProgramVariable("remotePress") == 0f
                 && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
         });
-    }
-
-    static void CheckSkips(string name, int expected)
-    {
-        int skips = (int)button.GetProgramVariable("handEarlyOutSkips");
-        Debug.Log("[PushButtonTest] " + name + ": " + skips + " players skipped");
-        Check(name + " skips", skips == expected, skips + " skipped, expected " + expected);
     }
 
     static void RecordHaptic(VRCPlayerApi player, VRC_Pickup.PickupHand hand, float duration, float amplitude, float frequency)
@@ -1523,15 +1554,6 @@ public static class PushButtonPlayModeTests
         return null;
     }
 
-    static void CountTrackingLogs(string message, string stackTrace, LogType type)
-    {
-        const string prefix = "[PushButton] Button: tracking ";
-        if (!message.StartsWith(prefix)) return;
-        trackingLogs++;
-        int count;
-        if (int.TryParse(message.Substring(prefix.Length).Split(' ')[0], out count)) lastTrackingLogCount = count;
-    }
-
     static void CheckButtonAtPress(string name, float press)
     {
         Vector3 restWorld = (Vector3)button.GetProgramVariable("restWorldPos");
@@ -1540,11 +1562,11 @@ public static class PushButtonPlayModeTests
         Check(name, Near(button.transform.position, restWorld + restRot * (axis * press)), "got " + button.transform.position.ToString("F4"));
     }
 
-    // Creates a ButtonActionExample target for the test (the scene gets its own in step 7.2), points the button at
-    // it with OnButtonPressed, and starts counting its "[ButtonActionExample] pressed" log lines.
+    // Creates a ButtonActionExample target for the test (separate from the scene's own), points the button at it with
+    // OnButtonPressed, and starts counting its "[ButtonActionExample] pressed" log lines.
     static bool SetUpActionTarget(string name)
     {
-        AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>("Assets/PushButton/Examples/ButtonActionExample.asset");
+        AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
         if (!Check(name + ": load ButtonActionExample program", program != null && program.SerializedProgramAsset != null, "no program asset")) return false;
 
         actionTarget = new GameObject("PushButtonTestActionTarget");
