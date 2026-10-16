@@ -2,6 +2,7 @@ using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon;
+using VRC.Udon.Common.Interfaces;
 
 /// <summary>
 /// Turns any object into a physically pushable button: VR players push it with their fingertips,
@@ -142,6 +143,21 @@ public class PushButton : UdonSharpBehaviour
     public override void Interact()
     {
         StartClickAnimation(true);
+        SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetPlayClickAnimation));
+    }
+
+    /// <summary>
+    /// Network event from another player's click: plays the same click animation, flagged non-local so it never
+    /// fires the action. Ignored when the local player is out of range. Deliberately doesn't check whether the local
+    /// player is in VR: every viewer sees the click, whatever their platform.
+    /// </summary>
+    public void NetPlayClickAnimation()
+    {
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        if (localPlayer != null && (localPlayer.GetPosition() - transform.position).sqrMagnitude > AnimationRangeSqr) return;
+        // Don't turn a local click that is still pressing in into a non-local one, or it would never fire.
+        if (clickActive && clickIsLocal) return;
+        StartClickAnimation(false);
     }
 
     /// <summary>

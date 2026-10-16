@@ -93,6 +93,7 @@ public static class PushButtonPlayModeTests
         AddPressTest("press unrotated", true);
         AddTriggerTest();
         AddClickTest();
+        AddNetClickTest();
         AddRestPoseTest();
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
@@ -450,6 +451,79 @@ public static class PushButtonPlayModeTests
             CheckActionCount(name + " second click fires once", 2);
             Check(name + " second click back at rest", press == 0f, "press " + press.ToString("F5"));
             Check(name + " second click re-armed", (bool)button.GetProgramVariable("armed"), "not armed");
+            TearDownActionTarget(name);
+        });
+    }
+
+    // Plan step 4.3: the network event handler, called directly as another player's click would, plays the click
+    // animation flagged non-local and never fires the action. With the button moved more than 5 m from the local
+    // player, the event is ignored.
+    static void AddNetClickTest()
+    {
+        const string name = "net click";
+        const float slowClickDuration = 1f;
+        const float slowReturnSpeed = 0.01f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            if (!SetUpActionTarget(name)) { button = null; return; }
+            savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
+            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
+            button.SetProgramVariable("returnSpeed", slowReturnSpeed);
+            button.SetProgramVariable("clickPressDuration", slowClickDuration);
+            Check(name + " armed and at rest before the event", (bool)button.GetProgramVariable("armed") && (float)button.GetProgramVariable("pressAmount") == 0f, "not ready");
+            button.SendCustomEvent("NetPlayClickAnimation");
+            clickTime = Time.time;
+            Check(name + " starts a non-local click", (bool)button.GetProgramVariable("clickActive") && !(bool)button.GetProgramVariable("clickIsLocal"),
+                "clickActive " + button.GetProgramVariable("clickActive") + ", clickIsLocal " + button.GetProgramVariable("clickIsLocal"));
+        });
+        AddStep(0.4f, () =>
+        {
+            if (button == null) return;
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            float expected = travel * (Time.time - clickTime) / slowClickDuration;
+            Debug.Log("[PushButtonTest] " + name + ": press-in " + press.ToString("F4") + ", expected about " + expected.ToString("F4"));
+            Check(name + " animates in over clickPressDuration", press > 0f && Mathf.Abs(press - expected) < travel * 0.1f,
+                "press " + press.ToString("F5") + ", expected " + expected.ToString("F5"));
+            CheckButtonAtPress(name + " press-in position", press);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Debug.Log("[PushButtonTest] " + name + ": after the bottom, press " + press.ToString("F4"));
+            CheckActionCount(name + " never fires", 0);
+            Check(name + " stays armed", (bool)button.GetProgramVariable("armed"), "disarmed");
+            Check(name + " click released", !(bool)button.GetProgramVariable("clickActive"), "still active");
+            Check(name + " reached the bottom and springs back", press > 0f && press < travel, "press " + press.ToString("F5"));
+            button.SetProgramVariable("returnSpeed", savedReturnSpeed);
+            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " back at rest", press == 0f, "press " + press.ToString("F5"));
+            CheckActionCount(name + " no fire on the way back", 0);
+
+            // Out of range: move the assembly 20 m away from the local player and send the event again.
+            Transform parent = button.transform.parent;
+            Vector3 savedParentPos = parent.position;
+            parent.position = savedParentPos + new Vector3(20f, 0f, 0f);
+            button.SendCustomEvent("NetPlayClickAnimation");
+            Check(name + " out of range is ignored", !(bool)button.GetProgramVariable("clickActive"), "click started");
+            parent.position = savedParentPos;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " out of range stays at rest", press == 0f, "press " + press.ToString("F5"));
+            CheckActionCount(name + " out of range no fire", 0);
             TearDownActionTarget(name);
         });
     }
