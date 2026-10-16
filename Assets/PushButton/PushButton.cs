@@ -123,6 +123,8 @@ public class PushButton : UdonSharpBehaviour
     // The haptic pulse played in that hand when its press fires the action, at hapticStrength.
     private const float HapticDuration = 0.08f;   // seconds
     private const float HapticFrequency = 320f;   // Hz
+    // Whether the local player was beyond AnimationRange on the last frame, so the reset to rest runs only once.
+    private bool outOfRange;
 
     private void Start()
     {
@@ -307,12 +309,51 @@ public class PushButton : UdonSharpBehaviour
     private void Update()
     {
         UpdateRestWorldPose();
+        if (!UpdateRangeGate()) return;
         UpdateFingertipPresses();
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
         UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
         UpdatePressAmount();
         ApplyPress(pressAmount);
+    }
+
+    /// <summary>
+    /// Returns false while the local player is farther than AnimationRange from the button, so Update skips the frame.
+    /// On the first out-of-range frame it snaps the button to rest and clears the engagement and click state, so
+    /// nothing is left half-pressed and a finger still inside the button has to come in from the front again.
+    /// A missing local player counts as in range.
+    /// </summary>
+    private bool UpdateRangeGate()
+    {
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        bool inRange = localPlayer == null || (localPlayer.GetPosition() - restWorldPos).sqrMagnitude <= AnimationRangeSqr;
+        if (inRange)
+        {
+            outOfRange = false;
+            return true;
+        }
+        if (outOfRange) return false;
+        outOfRange = true;
+
+        for (int i = 0; i < fingertipEngaged.Length; i++)
+        {
+            fingertipEngaged[i] = false;
+            fingertipWasInFront[i] = false;
+        }
+        debugEngaged = false;
+        debugWasInFront = false;
+        clickActive = false;
+        clickIsLocal = false;
+        localPress = 0f;
+        remotePress = 0f;
+        clickPress = 0f;
+        localPressHand = VRC_Pickup.PickupHand.None;
+        // The local press is now 0, below the re-arm depth.
+        armed = true;
+        pressAmount = 0f;
+        ApplyPress(0f);
+        return false;
     }
 
     /// <summary>

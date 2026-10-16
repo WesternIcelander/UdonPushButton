@@ -120,9 +120,11 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 
 ### Phase 6: Performance gates
 
-- [ ] **6.1 Add the range gate.**
+- [x] **6.1 Add the range gate.**
   At the top of `Update`, if the local player is farther than `AnimationRangeSqr` (squared distance) from the button, skip the frame. On the first out-of-range frame, snap the button to rest and clear the engagement and click state once.
   *Check:* in ClientSim, press with the debug sphere and walk more than 5 m away. The button snaps to rest. Walk back and it works normally.
+
+  Done: `Update` rebuilds the rest pose, then calls `UpdateRangeGate()`. This measures the squared distance from the local player's position to `restWorldPos` (a null local player counts as in range) and returns early when it's beyond `AnimationRangeSqr`. A new private `outOfRange` flag makes the reset run only on the first out-of-range frame. The reset clears every fingertip's engaged and in-front state, the debug fingertip's state and the click (`clickActive`, `clickIsLocal`, `clickPress`). It also zeroes `localPress`, `remotePress` and `localPressHand`, re-arms (the local press is now 0, below the re-arm depth), and snaps `pressAmount` and the transform to rest. Because in-front state is cleared, a fingertip still inside the button when the player comes back has to come in from the front again. `NetPlayClickAnimation`'s own range check (against `transform.position`) is unchanged. **Harness:** new `AddRangeGateTest` (unrotated, after the net-click test, `returnSpeed` 0.01 m/s so a snap can't be mistaken for spring-back). The debug fingertip presses to the stop (fires, disarmed), then the local player is teleported 10 m away. The button snaps to rest at once (press 0, at the rest position), engagement is cleared, it's re-armed and `outOfRange` is set. While away, pulling the tip out and pushing it back in registers nothing and doesn't fire. Back in range, the tip left inside doesn't engage; from the front it presses and fires again (2 action logs). A 1 s click teleported away part-way is cut off (click cleared, press 0, no fire). Teleporting back leaves the player in range, at rest and armed. "Walking" away is a ClientSim teleport. UdonSharp compiled 10 scripts with no errors. Result: `[PushButtonTest] done: 333 passed, 0 failed`, 0 errors (the trigger again only left Play Mode at "time up").
 
 - [ ] **6.2 Add the per-player hand early-out.**
   Skip a player's fingertip work when both hand bones are more than 0.5 m from the button.

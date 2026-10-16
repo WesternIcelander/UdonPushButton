@@ -113,6 +113,7 @@ public static class PushButtonPlayModeTests
         AddEngagementTest();
         AddClickTest();
         AddNetClickTest();
+        AddRangeGateTest();
         AddRestPoseTest();
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
@@ -794,6 +795,136 @@ public static class PushButtonPlayModeTests
             float press = (float)button.GetProgramVariable("pressAmount");
             Check(name + " out of range stays at rest", press == 0f, "press " + press.ToString("F5"));
             CheckActionCount(name + " out of range no fire", 0);
+            TearDownActionTarget(name);
+        });
+    }
+
+    // Plan step 6.1: with the local player teleported more than 5 m away, the button snaps to rest at once (not at
+    // the slow returnSpeed), its engagement and click state are cleared, and Update stops evaluating fingertips.
+    // Back in range it works normally again: a tip that stayed inside has to come in from the front to press.
+    static void AddRangeGateTest()
+    {
+        const string name = "range gate";
+        const float settle = 0.3f;
+        const float slowReturnSpeed = 0.01f;
+        Vector3 awayOffset = new Vector3(10f, 0f, 0f);
+        float travel = 0f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            if (!SetUpActionTarget(name)) { button = null; return; }
+            travel = (float)button.GetProgramVariable("travelDistance");
+            savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
+            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
+            button.SetProgramVariable("returnSpeed", slowReturnSpeed);
+            VRCPlayerApi localPlayer = Networking.LocalPlayer;
+            savedPlayerPos = localPlayer.GetPosition();
+            savedPlayerRot = localPlayer.GetRotation();
+            Check(name + " starts in range", !(bool)button.GetProgramVariable("outOfRange"), "out of range");
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            PlaceDebugTip(0.03f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " pressed before leaving", true, false, travel);
+            CheckActionCount(name + " fires before leaving", 1);
+            Check(name + " disarmed before leaving", !(bool)button.GetProgramVariable("armed"), "still armed");
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos + awayOffset, savedPlayerRot);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Debug.Log("[PushButtonTest] " + name + ": out of range, press " + press.ToString("F4") + ", player at " + Networking.LocalPlayer.GetPosition().ToString("F2"));
+            Check(name + " out of range", (bool)button.GetProgramVariable("outOfRange"), "still in range");
+            // At 0.01 m/s, springing back would still be most of the way down after 0.3 s.
+            Check(name + " snaps to rest", press == 0f, "press " + press.ToString("F5"));
+            CheckButtonAtPress(name + " at rest position", 0f);
+            CheckTip(name + " engagement cleared", false, false, 0f);
+            Check(name + " re-armed by the reset", (bool)button.GetProgramVariable("armed"), "not armed");
+            // Pull the tip out in front: while out of range nothing is evaluated, so it doesn't register in front.
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " not evaluated out of range", false, false, 0f);
+            PlaceDebugTip(0.03f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " push out of range ignored", false, false, 0f);
+            Check(name + " push out of range stays at rest", (float)button.GetProgramVariable("pressAmount") == 0f, "moved");
+            CheckActionCount(name + " push out of range does not fire", 1);
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            Check(name + " back in range", !(bool)button.GetProgramVariable("outOfRange"), "still out of range");
+            // The tip is still inside the button, but it never came in from the front, so it doesn't press.
+            CheckTip(name + " tip left inside does not engage", false, false, 0f);
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " in front again", false, true, 0f);
+            PlaceDebugTip(0.03f, 0f, 0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckTip(name + " pushed again", true, false, travel);
+            CheckActionCount(name + " fires again back in range", 2);
+            PlaceDebugTip(-0.01f, 0f, 0f);
+            button.SetProgramVariable("returnSpeed", savedReturnSpeed);
+        });
+
+        // A click still pressing in is cut off when the player leaves, and doesn't fire.
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Check(name + " at rest before clicking", (float)button.GetProgramVariable("pressAmount") == 0f && (bool)button.GetProgramVariable("armed"), "not ready");
+            button.SetProgramVariable("returnSpeed", slowReturnSpeed);
+            button.SetProgramVariable("clickPressDuration", 1f);
+            GameObject.Find(ButtonPath).GetComponent<ClientSimUdonHelper>().Interact();
+        });
+        AddStep(0.4f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " click part-way", press > 0f && press < travel, "press " + press.ToString("F5"));
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos + awayOffset, savedPlayerRot);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " click cleared out of range", !(bool)button.GetProgramVariable("clickActive") && (float)button.GetProgramVariable("clickPress") == 0f,
+                "clickActive " + button.GetProgramVariable("clickActive") + ", clickPress " + button.GetProgramVariable("clickPress"));
+            Check(name + " click snapped to rest", press == 0f, "press " + press.ToString("F5"));
+            CheckActionCount(name + " cut-off click does not fire", 2);
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
+            button.SetProgramVariable("returnSpeed", savedReturnSpeed);
+            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            Check(name + " player back at start", (Networking.LocalPlayer.GetPosition() - savedPlayerPos).magnitude < 0.01f,
+                "at " + Networking.LocalPlayer.GetPosition().ToString("F3"));
+            Check(name + " in range at the end", !(bool)button.GetProgramVariable("outOfRange"), "out of range");
+            Check(name + " at rest at the end", (float)button.GetProgramVariable("pressAmount") == 0f, "pressed");
+            Check(name + " armed at the end", (bool)button.GetProgramVariable("armed"), "not armed");
             TearDownActionTarget(name);
         });
     }
