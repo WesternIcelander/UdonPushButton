@@ -121,6 +121,7 @@ public static class PushButtonPlayModeTests
         AddRemotePressTest();
         AddVRFilterTest();
         AddHapticsTest();
+        AddHandEarlyOutTest();
 
         nextStepTime = EditorApplication.timeSinceStartup + stepDelays[0];
         EditorApplication.update += Tick;
@@ -206,10 +207,17 @@ public static class PushButtonPlayModeTests
     {
         const string name = "fingertips";
         Vector3 teleportOffset = new Vector3(1f, 0f, 0f);
-        // Only VR players' fingertips are estimated (plan step 5.4), and ClientSim's local player is on desktop.
+        // Only VR players' fingertips are estimated (plan step 5.4), and ClientSim's local player is on desktop. Only
+        // hands near the button are estimated (plan step 6.2), so the button sits 5 cm in front of the left index.
         AddStep(0.5f, () =>
         {
-            if (Networking.LocalPlayer != null) SimulateVR(Networking.LocalPlayer, true);
+            if (Networking.LocalPlayer == null) return;
+            SimulateVR(Networking.LocalPlayer, true);
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (button == null) return;
+            savedParentPos = button.transform.parent.position;
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.05f);
         });
         AddStep(0.5f, () =>
         {
@@ -241,6 +249,7 @@ public static class PushButtonPlayModeTests
             savedPlayerRot = localPlayer.GetRotation();
             tipsBeforeTeleport = (Vector3[])((Vector3[])button.GetProgramVariable("fingertipPositions")).Clone();
             localPlayer.TeleportTo(savedPlayerPos + teleportOffset, savedPlayerRot);
+            button.transform.parent.position += teleportOffset;
         });
         AddStep(0.5f, () =>
         {
@@ -254,6 +263,7 @@ public static class PushButtonPlayModeTests
                 Check(name + " tip " + f + " follows the teleport", (moved - teleportOffset).magnitude < 0.02f, "moved " + moved.ToString("F4"));
             }
             Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
+            button.transform.parent.position = savedParentPos;
         });
         AddStep(0.5f, () =>
         {
@@ -1276,6 +1286,106 @@ public static class PushButtonPlayModeTests
             simulatedVRPlayers.Clear();
             TearDownActionTarget(name);
         });
+    }
+
+    // Plan step 6.2: a VR player whose hands are both more than 0.5 m from the button is skipped (counted in the
+    // temporary handEarlyOutSkips) and their fingertip state cleared, while a player near the button presses as before.
+    // Desktop players aren't counted, as they never reach the hand check. A remote VR player is spawned and the local
+    // VR player stands 1.5 m aside, so the button can sit at one player's hand, the other's, or away from both.
+    static void AddHandEarlyOutTest()
+    {
+        const string name = "hand early-out";
+        const string remoteName = "PushButtonTest Remote E";
+        float travel = 0f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            travel = (float)button.GetProgramVariable("travelDistance");
+            savedParentPos = button.transform.parent.position;
+            ClientSimMain.SpawnRemotePlayer(remoteName);
+            VRCPlayerApi localPlayer = Networking.LocalPlayer;
+            savedPlayerPos = localPlayer.GetPosition();
+            savedPlayerRot = localPlayer.GetRotation();
+            localPlayer.TeleportTo(savedPlayerPos + new Vector3(1.5f, 0f, 0f), savedPlayerRot);
+            SimulateVR(localPlayer, true);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            VRCPlayerApi remote = FindPlayer(remoteName);
+            if (!Check(name + ": remote spawned and tracked", remote != null && SlotOf(remote, 0) >= 0, "not tracked")) { button = null; return; }
+            SimulateVR(remote, true);
+            if (!Check(name + ": remote avatar has index bones", MoveButtonOntoLeftIndex(remote, -0.02f), "no finger bones")) button = null;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckSkips(name + " at the remote's hand", 1);
+            CheckPlayerTip(name + " remote tip near", FindPlayer(remoteName), false, true);
+            MoveButtonOntoLeftIndex(FindPlayer(remoteName), 0.03f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckSkips(name + " remote pressing", 1);
+            CheckPlayerTip(name + " remote tip pushed in", FindPlayer(remoteName), true, false);
+            float remotePress = (float)button.GetProgramVariable("remotePress");
+            Check(name + " remote press unchanged", Mathf.Abs(remotePress - travel) < 1e-6f, "remotePress " + remotePress.ToString("F5"));
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.02f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckSkips(name + " at the local player's hand", 1);
+            CheckPlayerTip(name + " remote tip released when far", FindPlayer(remoteName), false, false);
+            CheckPlayerTip(name + " local tip near", Networking.LocalPlayer, false, true);
+            Check(name + " remote press cleared", (float)button.GetProgramVariable("remotePress") == 0f, "still pressed");
+            MoveButtonOntoLeftIndex(Networking.LocalPlayer, travel * 0.5f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckPlayerTip(name + " local tip pushed in", Networking.LocalPlayer, true, false);
+            float press = (float)button.GetProgramVariable("localPress");
+            Check(name + " local press unchanged", Mathf.Abs(press - travel * 0.5f) < 0.003f, "localPress " + press.ToString("F5"));
+            // 1 m up from the local hand: still within 5 m, so the range gate doesn't stop the frame.
+            button.transform.parent.position += new Vector3(0f, 1f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckSkips(name + " away from both", 2);
+            CheckPlayerTip(name + " local tip released when far", Networking.LocalPlayer, false, false);
+            Check(name + " local press cleared", (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
+            Check(name + " in range", !(bool)button.GetProgramVariable("outOfRange"), "range gate closed");
+            SimulateVR(FindPlayer(remoteName), false);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckSkips(name + " desktop remote not counted", 1);
+            button.transform.parent.position = savedParentPos;
+            ClientSimMain.RemovePlayer(FindPlayer(remoteName));
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
+            simulatedVRPlayers.Clear();
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            CheckSkips(name + " desktop only at the end", 0);
+            Check(name + " released at the end", (float)button.GetProgramVariable("remotePress") == 0f
+                && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
+        });
+    }
+
+    static void CheckSkips(string name, int expected)
+    {
+        int skips = (int)button.GetProgramVariable("handEarlyOutSkips");
+        Debug.Log("[PushButtonTest] " + name + ": " + skips + " players skipped");
+        Check(name + " skips", skips == expected, skips + " skipped, expected " + expected);
     }
 
     static void RecordHaptic(VRCPlayerApi player, VRC_Pickup.PickupHand hand, float duration, float amplitude, float frequency)

@@ -125,6 +125,12 @@ public class PushButton : UdonSharpBehaviour
     private const float HapticFrequency = 320f;   // Hz
     // Whether the local player was beyond AnimationRange on the last frame, so the reset to rest runs only once.
     private bool outOfRange;
+    // A player's fingertip work is skipped while both their hand bones are farther than this from the contact box.
+    private const float HandEarlyOutDistance = 0.5f;   // meters
+    // HandEarlyOutDistance plus the contact box's bounding radius, squared, measured from the box centre.
+    private float handEarlyOutRangeSqr;
+    // TEMP (plan step 6.2): players skipped by the hand early-out on the last frame, for the Play Mode tests.
+    private int handEarlyOutSkips;
 
     private void Start()
     {
@@ -369,10 +375,18 @@ public class PushButton : UdonSharpBehaviour
         float remote = 0f;
         VRC_Pickup.PickupHand localHand = VRC_Pickup.PickupHand.None;
         Quaternion toRest = Quaternion.Inverse(restWorldRot);
+        Vector3 boxCenter = restWorldPos + restWorldRot * contactCenter;
+        int skipped = 0;
         for (int i = 0; i < trackedPlayers.Length; i++)
         {
             VRCPlayerApi player = trackedPlayers[i];
             bool pressing = Utilities.IsValid(player) && player.IsUserInVR();
+            // Hands this far away can't reach the button, so their fingertips are cleared like a non-pressing player's.
+            if (pressing && !HandNear(player, HumanBodyBones.LeftHand, boxCenter) && !HandNear(player, HumanBodyBones.RightHand, boxCenter))
+            {
+                pressing = false;
+                skipped++;
+            }
             if (pressing) GetFingertips(player);
             for (int f = 0; f < FingertipsPerPlayer; f++)
             {
@@ -423,6 +437,17 @@ public class PushButton : UdonSharpBehaviour
         localPress = local;
         remotePress = remote;
         localPressHand = localHand;
+        handEarlyOutSkips = skipped;
+    }
+
+    /// <summary>
+    /// Whether the player's hand bone is within HandEarlyOutDistance of the contact box (measured from its centre,
+    /// allowing for its bounding radius). A missing hand bone counts as near, so the fingertip estimate decides.
+    /// </summary>
+    private bool HandNear(VRCPlayerApi player, HumanBodyBones handBone, Vector3 boxCenter)
+    {
+        Vector3 hand = player.GetBonePosition(handBone);
+        return hand == Vector3.zero || (hand - boxCenter).sqrMagnitude <= handEarlyOutRangeSqr;
     }
 
     /// <summary>
@@ -573,6 +598,8 @@ public class PushButton : UdonSharpBehaviour
         footprintCenterV = Vector3.Dot(centerMeters, lateralAxisV);
         footprintHalfU = BoxSupport(halfMeters, lateralAxisU);
         footprintHalfV = BoxSupport(halfMeters, lateralAxisV);
+        float handRange = HandEarlyOutDistance + halfMeters.magnitude;
+        handEarlyOutRangeSqr = handRange * handRange;
     }
 
     /// <summary>
