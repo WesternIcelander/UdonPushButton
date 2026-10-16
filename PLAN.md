@@ -76,9 +76,10 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 
 ### Phase 4: Desktop/mobile click and network event
 
-- [ ] **4.1 Set up local input mode.**
+- [x] **4.1 Set up local input mode.**
   In `Start`, set the collider's `isTrigger = true`. If `LocalPlayer.IsUserInVR()`, set `DisableInteractive = true`. Otherwise enable interaction with `InteractionText = interactText`. If `LocalPlayer` is null, fall back to desktop mode.
   *Check:* in ClientSim desktop, hovering shows the "Press" tooltip.
+  Done: `Start` calls `SetUpLocalInput()` after the contact box. It makes the button's own `Collider` a trigger (warning if there is none) and stores a private `localIsVR` (false when `LocalPlayer` is null). VR sets `DisableInteractive = true`; otherwise `DisableInteractive = false` and `InteractionText = interactText`. Udon only treats a behaviour as interactive if it has an `Interact` event, so an empty `public override void Interact()` was added, marked `TEMP (plan step 4.1)`, for 4.2 to fill in. Added `AddInputModeTest` to the harness. It checks the collider is a trigger, that the ClientSim local player is on desktop and matches `localIsVR`, and that `IsInteractive` is true. It also reads what ClientSim's tooltip would show from the button's `ClientSimUdonHelper` (`CanInteract()` and `GetInteractText()`), which logged `ClientSim can interact True, tooltip "Press"`. Result: `[PushButtonTest] done: 74 passed, 0 failed`, 0 errors. Nobody hovered by hand: the tooltip was checked through ClientSim's helper (the same calls `ClientSimTooltip` uses), and the VR branch was only checked by reading the code.
 
 - [ ] **4.2 Add the local click animation.**
   `Interact()` starts the click animation (stamped with `Time.time`, flagged local): `clickPress` goes 0 → `travelDistance` over `clickPressDuration`, then releases. The action fires through the trigger rules from 3.2.

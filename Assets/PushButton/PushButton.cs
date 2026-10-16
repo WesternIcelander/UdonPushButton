@@ -1,5 +1,6 @@
 using UdonSharp;
 using UnityEngine;
+using VRC.SDKBase;
 using VRC.Udon;
 
 /// <summary>
@@ -89,6 +90,8 @@ public class PushButton : UdonSharpBehaviour
     private bool armed = true;
     // Meters short of travelDistance at which the local press counts as reaching the bottom.
     private const float FireTolerance = 0.0005f;
+    // Whether the local player is in VR, set once in Start: VR players press with their fingers, everyone else clicks.
+    private bool localIsVR;
 
     private void Start()
     {
@@ -101,10 +104,39 @@ public class PushButton : UdonSharpBehaviour
         restLocalRotation = transform.localRotation;
         UpdateRestWorldPose();
         ComputeContactBox(true);
+        SetUpLocalInput();
 
         // TEMP (plan step 2.1): remove once later steps use the rest pose.
         Debug.Log("[PushButton] rest local " + restLocalPosition.ToString("F4") + " " + restLocalRotation.eulerAngles.ToString("F2")
             + ", rest world " + restWorldPos.ToString("F4") + " " + restWorldRot.eulerAngles.ToString("F2"));
+    }
+
+    /// <summary>
+    /// Makes the collider a trigger so it never blocks hands or players. VR players press with their fingers, so
+    /// Interact is disabled for them; desktop and mobile players (or no local player at all) click it instead.
+    /// </summary>
+    private void SetUpLocalInput()
+    {
+        Collider ownCollider = GetComponent<Collider>();
+        if (ownCollider != null) ownCollider.isTrigger = true;
+        else Debug.LogWarning("[PushButton] " + name + ": no collider, so desktop and mobile players can't click it");
+
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        localIsVR = localPlayer != null && localPlayer.IsUserInVR();
+        if (localIsVR)
+        {
+            DisableInteractive = true;
+        }
+        else
+        {
+            DisableInteractive = false;
+            InteractionText = interactText;
+        }
+    }
+
+    public override void Interact()
+    {
+        // TEMP (plan step 4.1): the click animation comes in step 4.2. Interact has to exist for the tooltip to show.
     }
 
     private void Update()

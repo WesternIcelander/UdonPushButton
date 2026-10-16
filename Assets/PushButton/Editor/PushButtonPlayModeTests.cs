@@ -3,6 +3,8 @@ using UdonSharpEditor;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using VRC.SDK3.ClientSim;
+using VRC.SDKBase;
 using VRC.Udon;
 using VRC.Udon.Common;
 
@@ -84,6 +86,7 @@ public static class PushButtonPlayModeTests
         passed = 0;
         failed = 0;
         AddContactBoxTest();
+        AddInputModeTest();
         AddGizmoTest("gizmo unrotated");
         AddPressTest("press unrotated", true);
         AddTriggerTest();
@@ -133,6 +136,37 @@ public static class PushButtonPlayModeTests
             Check("footprint half U", Mathf.Abs(halfU - 0.025f) < Tolerance, "got " + halfU.ToString("F5"));
             Check("footprint half V", Mathf.Abs(halfV - 0.025f) < Tolerance, "got " + halfV.ToString("F5"));
             Check("press axis normalized", Near(axis, new Vector3(0f, 0f, -1f)), "got " + axis.ToString("F4"));
+        });
+    }
+
+    // Plan step 4.1: the collider becomes a trigger, and for the (desktop) ClientSim player the button is interactive
+    // with the "Press" tooltip. Reads what ClientSim's tooltip shows through its helper on the button.
+    static void AddInputModeTest()
+    {
+        const string name = "input mode";
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            UdonBehaviour ub = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", ub != null, "no UdonBehaviour on " + ButtonPath)) return;
+
+            Collider collider = go.GetComponent<Collider>();
+            Check(name + " collider is trigger", collider != null && collider.isTrigger, collider == null ? "no collider" : "isTrigger false");
+
+            VRCPlayerApi localPlayer = Networking.LocalPlayer;
+            if (!Check(name + ": ClientSim local player", localPlayer != null, "Networking.LocalPlayer is null")) return;
+            bool inVR = localPlayer.IsUserInVR();
+            Check(name + " local player on desktop", !inVR, "IsUserInVR true");
+            Check(name + " localIsVR matches", (bool)ub.GetProgramVariable("localIsVR") == inVR, "localIsVR differs");
+            Check(name + " interact enabled", !ub.DisableInteractive && ub.IsInteractive,
+                "DisableInteractive " + ub.DisableInteractive + ", IsInteractive " + ub.IsInteractive);
+
+            ClientSimUdonHelper helper = go.GetComponent<ClientSimUdonHelper>();
+            if (!Check(name + ": ClientSim helper", helper != null, "no ClientSimUdonHelper on " + ButtonPath)) return;
+            string tooltip = helper.GetInteractText();
+            Debug.Log("[PushButtonTest] " + name + ": ClientSim can interact " + helper.CanInteract() + ", tooltip \"" + tooltip + "\"");
+            Check(name + " ClientSim can interact", helper.CanInteract(), "CanInteract false");
+            Check(name + " tooltip text", tooltip == "Press", "got \"" + tooltip + "\"");
         });
     }
 
