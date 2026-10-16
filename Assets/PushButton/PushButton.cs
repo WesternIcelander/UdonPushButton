@@ -107,6 +107,16 @@ public class PushButton : UdonSharpBehaviour
     private bool[] fingertipEngaged = new bool[0];
     private bool[] fingertipWasInFront = new bool[0];
 
+    // The fingertip lies this fraction of the last finger segment (intermediate -> distal) beyond the distal bone.
+    private const float FingertipExtrapolation = 0.8f;
+    // Avatar eye height in meters at which fingertipRadius applies unscaled; other avatars scale it in proportion.
+    private const float ReferenceEyeHeight = 1.6f;
+    // Filled by GetFingertips for one player, in the same slot order as the state arrays: world positions, which
+    // slots hold a usable tip (an enabled finger on an avatar with the bones), and the radius scaled to the avatar.
+    private Vector3[] fingertipPositions = new Vector3[FingertipsPerPlayer];
+    private bool[] fingertipValid = new bool[FingertipsPerPlayer];
+    private float fingertipScaledRadius;
+
     private void Start()
     {
 #if !UNITY_EDITOR
@@ -202,6 +212,40 @@ public class PushButton : UdonSharpBehaviour
         Debug.Log("[PushButton] " + name + ": tracking " + count + " players");
     }
 
+    /// <summary>
+    /// Estimates the player's enabled fingertips into fingertipPositions and fingertipValid (slots: left index, right
+    /// index, left middle, right middle), and sets fingertipScaledRadius from their avatar's eye height.
+    /// </summary>
+    private void GetFingertips(VRCPlayerApi player)
+    {
+        fingertipValid[0] = useIndexFingers && EstimateFingertip(player, 0, HumanBodyBones.LeftIndexDistal, HumanBodyBones.LeftIndexIntermediate, HumanBodyBones.LeftHand);
+        fingertipValid[1] = useIndexFingers && EstimateFingertip(player, 1, HumanBodyBones.RightIndexDistal, HumanBodyBones.RightIndexIntermediate, HumanBodyBones.RightHand);
+        fingertipValid[2] = useMiddleFingers && EstimateFingertip(player, 2, HumanBodyBones.LeftMiddleDistal, HumanBodyBones.LeftMiddleIntermediate, HumanBodyBones.LeftHand);
+        fingertipValid[3] = useMiddleFingers && EstimateFingertip(player, 3, HumanBodyBones.RightMiddleDistal, HumanBodyBones.RightMiddleIntermediate, HumanBodyBones.RightHand);
+
+        float eyeHeight = player.GetAvatarEyeHeightAsMeters();
+        fingertipScaledRadius = eyeHeight > 0f ? fingertipRadius * eyeHeight / ReferenceEyeHeight : fingertipRadius;
+    }
+
+    /// <summary>
+    /// Puts one fingertip estimate in fingertipPositions[slot]: the distal bone extended along the last finger segment,
+    /// or the hand bone if the avatar lacks those finger bones. Returns false if it lacks the hand bone too.
+    /// GetBonePosition returns zero for a missing bone.
+    /// </summary>
+    private bool EstimateFingertip(VRCPlayerApi player, int slot, HumanBodyBones distalBone, HumanBodyBones intermediateBone, HumanBodyBones handBone)
+    {
+        Vector3 distal = player.GetBonePosition(distalBone);
+        Vector3 intermediate = player.GetBonePosition(intermediateBone);
+        if (distal != Vector3.zero && intermediate != Vector3.zero)
+        {
+            fingertipPositions[slot] = distal + (distal - intermediate) * FingertipExtrapolation;
+            return true;
+        }
+        Vector3 hand = player.GetBonePosition(handBone);
+        fingertipPositions[slot] = hand;
+        return hand != Vector3.zero;
+    }
+
     public override void Interact()
     {
         StartClickAnimation(true);
@@ -258,6 +302,9 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         // TEMP (plan step 3.1): replaced by the local fingertips in step 5.3.
         localPress = debugLocalPress;
+        // TEMP (plan step 5.2): exposes the local player's fingertips to the tests. Replaced by the per-player loop in step 5.3.
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        if (Utilities.IsValid(localPlayer)) GetFingertips(localPlayer);
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
         UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
@@ -441,7 +488,29 @@ public class PushButton : UdonSharpBehaviour
         Gizmos.DrawLine(faceCenter, faceCenter - pressAxis * head - lateralAxisV * head * 0.5f);
 
         Gizmos.matrix = previousMatrix;
+        DrawFingertipGizmos();
         Gizmos.color = previousColor;
+    }
+
+    /// <summary>
+    /// Editor only, in Play Mode: a wire sphere of the scaled radius at each estimated fingertip of every tracked player.
+    /// </summary>
+    private void DrawFingertipGizmos()
+    {
+        if (!Application.isPlaying) return;
+        UdonBehaviour udon = GetComponent<UdonBehaviour>();
+        VRCPlayerApi[] players = udon != null ? udon.GetProgramVariable("trackedPlayers") as VRCPlayerApi[] : null;
+        if (players == null) return;
+        Gizmos.color = new Color(0.3f, 1f, 0.3f, 0.9f);
+        foreach (VRCPlayerApi player in players)
+        {
+            if (!Utilities.IsValid(player)) continue;
+            GetFingertips(player);
+            for (int f = 0; f < FingertipsPerPlayer; f++)
+            {
+                if (fingertipValid[f]) Gizmos.DrawWireSphere(fingertipPositions[f], fingertipScaledRadius);
+            }
+        }
     }
 
     /// <summary>

@@ -42,6 +42,9 @@ public static class PushButtonPlayModeTests
     static float clickTime;
     static int lastTrackingLogCount;
     static int trackingLogs;
+    static Vector3 savedPlayerPos;
+    static Quaternion savedPlayerRot;
+    static Vector3[] tipsBeforeTeleport;
 
     static PushButtonPlayModeTests()
     {
@@ -92,6 +95,7 @@ public static class PushButtonPlayModeTests
         failed = 0;
         AddContactBoxTest();
         AddInputModeTest();
+        AddFingertipTest();
         AddGizmoTest("gizmo unrotated");
         AddPressTest("press unrotated", true);
         AddTriggerTest();
@@ -176,6 +180,92 @@ public static class PushButtonPlayModeTests
             Check(name + " ClientSim can interact", helper.CanInteract(), "CanInteract false");
             Check(name + " tooltip text", tooltip == "Press", "got \"" + tooltip + "\"");
         });
+    }
+
+    // Plan step 5.2: the local player's fingertip estimates (exposed each frame by a temporary hook in Update) match the
+    // ClientSim avatar's finger bones, honour the finger toggles, carry the eye-height-scaled radius, and follow the
+    // avatar when the player teleports 1 m sideways.
+    static void AddFingertipTest()
+    {
+        const string name = "fingertips";
+        Vector3 teleportOffset = new Vector3(1f, 0f, 0f);
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            if (!Check(name + ": local player", Networking.LocalPlayer != null, "Networking.LocalPlayer is null")) { button = null; return; }
+            CheckFingertips(name + " defaults", true, false);
+
+            float eyeHeight = Networking.LocalPlayer.GetAvatarEyeHeightAsMeters();
+            float radius = (float)button.GetProgramVariable("fingertipScaledRadius");
+            float expectedRadius = (float)button.GetProgramVariable("fingertipRadius") * eyeHeight / 1.6f;
+            Debug.Log("[PushButtonTest] " + name + ": eye height " + eyeHeight.ToString("F3") + " m, scaled radius " + radius.ToString("F5"));
+            Check(name + " radius scaled by eye height", Mathf.Abs(radius - expectedRadius) < 1e-6f,
+                "got " + radius.ToString("F6") + ", expected " + expectedRadius.ToString("F6"));
+
+            button.SetProgramVariable("useIndexFingers", false);
+            button.SetProgramVariable("useMiddleFingers", true);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckFingertips(name + " middle only", false, true);
+            button.SetProgramVariable("useIndexFingers", true);
+            button.SetProgramVariable("useMiddleFingers", false);
+
+            VRCPlayerApi localPlayer = Networking.LocalPlayer;
+            savedPlayerPos = localPlayer.GetPosition();
+            savedPlayerRot = localPlayer.GetRotation();
+            tipsBeforeTeleport = (Vector3[])((Vector3[])button.GetProgramVariable("fingertipPositions")).Clone();
+            localPlayer.TeleportTo(savedPlayerPos + teleportOffset, savedPlayerRot);
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            CheckFingertips(name + " after teleport", true, false);
+            Vector3[] tips = (Vector3[])button.GetProgramVariable("fingertipPositions");
+            for (int f = 0; f < 2; f++)
+            {
+                Vector3 moved = tips[f] - tipsBeforeTeleport[f];
+                Debug.Log("[PushButtonTest] " + name + " tip " + f + " moved " + moved.ToString("F4"));
+                Check(name + " tip " + f + " follows the teleport", (moved - teleportOffset).magnitude < 0.02f, "moved " + moved.ToString("F4"));
+            }
+            Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            Check(name + " player back at start", (Networking.LocalPlayer.GetPosition() - savedPlayerPos).magnitude < 0.01f,
+                "at " + Networking.LocalPlayer.GetPosition().ToString("F3"));
+        });
+    }
+
+    // Compares the Udon fingertip slots with an estimate from the local player's bones taken now. Udon sampled the bones
+    // earlier in the frame, so a small idle-animation drift is allowed.
+    static void CheckFingertips(string name, bool index, bool middle)
+    {
+        HumanBodyBones[] distal = { HumanBodyBones.LeftIndexDistal, HumanBodyBones.RightIndexDistal, HumanBodyBones.LeftMiddleDistal, HumanBodyBones.RightMiddleDistal };
+        HumanBodyBones[] intermediate = { HumanBodyBones.LeftIndexIntermediate, HumanBodyBones.RightIndexIntermediate, HumanBodyBones.LeftMiddleIntermediate, HumanBodyBones.RightMiddleIntermediate };
+        HumanBodyBones[] hand = { HumanBodyBones.LeftHand, HumanBodyBones.RightHand, HumanBodyBones.LeftHand, HumanBodyBones.RightHand };
+        VRCPlayerApi player = Networking.LocalPlayer;
+        Vector3[] tips = (Vector3[])button.GetProgramVariable("fingertipPositions");
+        bool[] valid = (bool[])button.GetProgramVariable("fingertipValid");
+        for (int f = 0; f < 4; f++)
+        {
+            bool enabled = f < 2 ? index : middle;
+            Check(name + " slot " + f + (enabled ? " valid" : " off"), valid[f] == enabled, "valid " + valid[f]);
+            if (!enabled) continue;
+            Vector3 d = player.GetBonePosition(distal[f]);
+            Vector3 i = player.GetBonePosition(intermediate[f]);
+            bool hasFinger = d != Vector3.zero && i != Vector3.zero;
+            Vector3 expected = hasFinger ? d + (d - i) * 0.8f : player.GetBonePosition(hand[f]);
+            float error = (tips[f] - expected).magnitude;
+            Debug.Log("[PushButtonTest] " + name + " slot " + f + ": " + (hasFinger ? "finger bones" : "hand fallback")
+                + ", tip " + tips[f].ToString("F4") + ", " + (error * 1000f).ToString("F2") + " mm from expected");
+            Check(name + " slot " + f + " position", error < 0.005f, "off by " + error.ToString("F4") + " m");
+            if (hasFinger) Check(name + " slot " + f + " beyond the distal bone", Vector3.Dot(tips[f] - d, d - i) > 0f, "not past the distal bone");
+        }
     }
 
     // Plan step 2.4: the gizmo's rest box matches the button, and with travel 0.019 the full-depth box's
