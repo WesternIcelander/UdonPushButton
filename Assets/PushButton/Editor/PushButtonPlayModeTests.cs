@@ -4,6 +4,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using VRC.Udon;
+using VRC.Udon.Common;
 
 /// <summary>
 /// Play Mode checks for <see cref="PushButton"/>, run unattended through the editor trigger:
@@ -31,6 +32,10 @@ public static class PushButtonPlayModeTests
     static Vector3 firstRestWorldPos;
     static float savedReturnSpeed;
     static float releaseTime;
+    static GameObject actionTarget;
+    static UdonBehaviour savedTarget;
+    static string savedEventName;
+    static int actionCount;
 
     static PushButtonPlayModeTests()
     {
@@ -65,7 +70,11 @@ public static class PushButtonPlayModeTests
 
     static void OnPlayModeStateChanged(PlayModeStateChange change)
     {
-        if (change == PlayModeStateChange.ExitingPlayMode) EditorApplication.update -= Tick;
+        if (change == PlayModeStateChange.ExitingPlayMode)
+        {
+            EditorApplication.update -= Tick;
+            Application.logMessageReceived -= CountActionLogs;
+        }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
         SessionState.EraseBool(ArmedKey);
 
@@ -77,6 +86,7 @@ public static class PushButtonPlayModeTests
         AddContactBoxTest();
         AddGizmoTest("gizmo unrotated");
         AddPressTest("press unrotated", true);
+        AddTriggerTest();
         AddRestPoseTest();
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
@@ -257,6 +267,140 @@ public static class PushButtonPlayModeTests
             Check(name + " back at rest", press == 0f && Near(button.transform.position, restWorld),
                 "press " + press.ToString("F5") + ", at " + button.transform.position.ToString("F4"));
         });
+    }
+
+    // Plan step 3.2: the local press fires the action once per sweep to the bottom, hovering at the bottom or rising
+    // only part-way (above releaseFraction) doesn't fire again, and remotePress moves the button but never fires.
+    // The target is a ButtonActionExample created for the test (the scene gets its own in step 7.2); presses are
+    // counted from its "[ButtonActionExample] pressed" log line.
+    static void AddTriggerTest()
+    {
+        const string name = "trigger";
+        const float settle = 0.3f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>("Assets/PushButton/Examples/ButtonActionExample.asset");
+            if (!Check(name + ": load ButtonActionExample program", program != null && program.SerializedProgramAsset != null, "no program asset")) { button = null; return; }
+
+            actionTarget = new GameObject("PushButtonTestActionTarget");
+            actionTarget.SetActive(false);
+            UdonBehaviour target = actionTarget.AddComponent<UdonBehaviour>();
+            target.AssignProgramAndVariables(program.SerializedProgramAsset, new UdonVariableTable());
+            actionTarget.SetActive(true);
+            target.InitializeUdonContent();
+
+            savedTarget = (UdonBehaviour)button.GetProgramVariable("targetBehaviour");
+            savedEventName = (string)button.GetProgramVariable("eventName");
+            button.SetProgramVariable("targetBehaviour", target);
+            button.SetProgramVariable("eventName", "OnButtonPressed");
+            actionCount = 0;
+            Application.logMessageReceived += CountActionLogs;
+            Check(name + " armed at start", (bool)button.GetProgramVariable("armed"), "not armed");
+        });
+        AddSweepSteps(name + " sweep 1", 1, settle);
+        AddSweepSteps(name + " sweep 2", 2, settle);
+
+        // Down, part-way up (still above releaseFraction), down again: no second fire.
+        AddStep(settle, () => SetLocalPress(1f));
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " partial: first bottom fires", 3);
+            SetLocalPress(0.75f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            Check(name + " partial: still disarmed above releaseFraction", !(bool)button.GetProgramVariable("armed"), "re-armed");
+            SetLocalPress(1f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " partial: no fire without re-arming", 3);
+            SetLocalPress(0f);
+        });
+
+        // remotePress alone moves the button to the stop but never fires.
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            Check(name + " re-armed before remote", (bool)button.GetProgramVariable("armed"), "not armed");
+            button.SetProgramVariable("remotePress", 0.03f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            float travel = (float)button.GetProgramVariable("travelDistance");
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " remote moves button to travel", Mathf.Abs(press - travel) < 1e-6f, "press " + press.ToString("F5"));
+            CheckActionCount(name + " remote never fires", 3);
+            Check(name + " remote leaves it armed", (bool)button.GetProgramVariable("armed"), "disarmed");
+            button.SetProgramVariable("remotePress", 0f);
+        });
+        AddStep(0.5f, () =>
+        {
+            Application.logMessageReceived -= CountActionLogs;
+            if (button != null)
+            {
+                CheckActionCount(name + " total presses", 3);
+                float press = (float)button.GetProgramVariable("pressAmount");
+                Check(name + " back at rest", press == 0f, "press " + press.ToString("F5"));
+                button.SetProgramVariable("targetBehaviour", savedTarget);
+                button.SetProgramVariable("eventName", savedEventName);
+            }
+            if (actionTarget != null) Object.Destroy(actionTarget);
+            Debug.Log("[PushButtonTest] trigger: " + actionCount + " action logs");
+        });
+    }
+
+    // One sweep 0 -> bottom -> hover -> 0: fires once on reaching the bottom, not again while hovering, re-arms at 0.
+    static void AddSweepSteps(string name, int expectedCount, float settle)
+    {
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            SetLocalPress(1f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " fires at the bottom", expectedCount);
+            Check(name + " disarmed after firing", !(bool)button.GetProgramVariable("armed"), "still armed");
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            CheckActionCount(name + " hovering does not fire again", expectedCount);
+            SetLocalPress(0f);
+        });
+        AddStep(settle, () =>
+        {
+            if (button == null) return;
+            Check(name + " re-armed after release", (bool)button.GetProgramVariable("armed"), "not armed");
+            CheckActionCount(name + " release does not fire", expectedCount);
+        });
+    }
+
+    // Sets the temporary local press to a fraction of travelDistance.
+    static void SetLocalPress(float fraction)
+    {
+        if (button == null) return;
+        float travel = (float)button.GetProgramVariable("travelDistance");
+        button.SetProgramVariable("debugLocalPress", travel * fraction);
+    }
+
+    static void CountActionLogs(string message, string stackTrace, LogType type)
+    {
+        if (message.Contains("[ButtonActionExample] pressed")) actionCount++;
+    }
+
+    static void CheckActionCount(string name, int expected)
+    {
+        Check(name, actionCount == expected, "action logged " + actionCount + " times, expected " + expected);
     }
 
     static void CheckWorldRestPose(string name, Vector3 restLocal)

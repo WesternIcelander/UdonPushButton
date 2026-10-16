@@ -85,6 +85,10 @@ public class PushButton : UdonSharpBehaviour
     private float clickPress;
     // The press amount the button is shown at, in [0, travelDistance].
     private float pressAmount;
+    // Firing disarms the button; the local press rising back to releaseFraction of the travel re-arms it.
+    private bool armed = true;
+    // Meters short of travelDistance at which the local press counts as reaching the bottom.
+    private const float FireTolerance = 0.0005f;
 
     private void Start()
     {
@@ -108,8 +112,48 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         // TEMP (plan step 3.1): replaced by the local fingertips in step 5.3.
         localPress = debugLocalPress;
+        UpdateTrigger(Mathf.Clamp(localPress, 0f, travelDistance));
         UpdatePressAmount();
         ApplyPress(pressAmount);
+    }
+
+    /// <summary>
+    /// Fires the action when the local press reaches the bottom while armed, and re-arms once it rises back to
+    /// releaseFraction of the travel. Only local presses come through here, so remote presses never fire.
+    /// </summary>
+    private void UpdateTrigger(float localAmount)
+    {
+        float fireDepth = travelDistance - FireTolerance;
+        if (armed)
+        {
+            if (localAmount >= fireDepth)
+            {
+                armed = false;
+                FireAction();
+            }
+        }
+        else if (localAmount <= travelDistance * releaseFraction && localAmount < fireDepth)
+        {
+            armed = true;
+        }
+    }
+
+    /// <summary>
+    /// Sends the configured event to the target behaviour, or warns if the target or the event name is unset.
+    /// </summary>
+    private void FireAction()
+    {
+        if (targetBehaviour == null)
+        {
+            Debug.LogWarning("[PushButton] " + name + ": pressed, but no target behaviour is set");
+            return;
+        }
+        if (string.IsNullOrEmpty(eventName))
+        {
+            Debug.LogWarning("[PushButton] " + name + ": pressed, but no event name is set");
+            return;
+        }
+        targetBehaviour.SendCustomEvent(eventName);
     }
 
     /// <summary>
