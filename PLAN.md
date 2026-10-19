@@ -13,6 +13,9 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 - The **travel distance** is one Inspector value: the button stops at that depth and fires there.
 - The **action** is a target UdonBehaviour plus a custom event name, both set in the Inspector.
 - It works with **any object, at any rotation or scale**, under any parent. **Only the button itself is animated.** It never references or needs a backing plate.
+- **One `PushButtonManager` per scene drives every button.** It is required: a button without one does nothing. It reads each player's bones once per frame for all buttons, so the cost stays flat as buttons are added (see [Manager](#manager)).
+- **Enabling and disabling buttons at any time is safe** (see [Enable and disable](#enable-and-disable)).
+- **A build-time check** offers to add the manager and wire the buttons when they are missing or wrong, and never blocks a build.
 
 ---
 
@@ -89,7 +92,7 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 - [x] **4.3 Add the networked click animation.**
   After a local click, send `SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetPlayClickAnimation))`. `public void NetPlayClickAnimation()` starts the same animation flagged **non-local**, which never fires the action. The handler ignores the event if the local player is out of range, and **does not check the local player's VR status**.
   *Check:* calling `NetPlayClickAnimation` directly (e.g. from a temporary ClientSim debug call) animates the button with no action log.
-  Done: `Interact()` now sends the network event to `Others` after starting the local click. `NetPlayClickAnimation()` returns early when the local player is farther than `AnimationRangeSqr` from `transform.position` (a null local player counts as in range), and otherwise calls `StartClickAnimation(false)`. It doesn't look at VR status. **Extra guard:** if a *local* click is still pressing in (`clickActive && clickIsLocal`), the event is ignored, so another player's click arriving at the same moment can't turn the local click non-local and swallow its action. 6.1's range gate will also cover the out-of-range case each frame; this check stops a far-away event from starting a click in the first place. Added `AddNetClickTest` to the harness (instead of a temporary debug call inside `PushButton`). It calls `SendCustomEvent("NetPlayClickAnimation")` on the button's UdonBehaviour with `clickPressDuration` 1 s and `returnSpeed` 0.01 m/s, and checks: a non-local click starts; the press 0.4 s in matches the animation (0.0076 measured and expected); afterwards it reached the bottom and is springing back (0.0150), the click has ended, the button is still armed, and nothing fired. It then checks the button returns to rest. Finally it moves the parent 20 m away, sends the event again, and checks that no click starts, the button stays at rest, and nothing fires. Result: 0 action logs, `[PushButtonTest] done: 109 passed, 0 failed`, 0 errors. ClientSim has no remote clients, so the actual network delivery to other players is left for 8.3.
+  Done: `Interact()` now sends the network event to `Others` after starting the local click. `NetPlayClickAnimation()` returns early when the local player is farther than `AnimationRangeSqr` from `transform.position` (a null local player counts as in range), and otherwise calls `StartClickAnimation(false)`. It doesn't look at VR status. **Extra guard:** if a *local* click is still pressing in (`clickActive && clickIsLocal`), the event is ignored, so another player's click arriving at the same moment can't turn the local click non-local and swallow its action. 6.1's range gate will also cover the out-of-range case each frame; this check stops a far-away event from starting a click in the first place. Added `AddNetClickTest` to the harness (instead of a temporary debug call inside `PushButton`). It calls `SendCustomEvent("NetPlayClickAnimation")` on the button's UdonBehaviour with `clickPressDuration` 1 s and `returnSpeed` 0.01 m/s, and checks: a non-local click starts; the press 0.4 s in matches the animation (0.0076 measured and expected); afterwards it reached the bottom and is springing back (0.0150), the click has ended, the button is still armed, and nothing fired. It then checks the button returns to rest. Finally it moves the parent 20 m away, sends the event again, and checks that no click starts, the button stays at rest, and nothing fires. Result: 0 action logs, `[PushButtonTest] done: 109 passed, 0 failed`, 0 errors. ClientSim has no remote clients, so the actual network delivery to other players is left for 9.3 (formerly 8.3).
 
 ### Phase 5: Fingertip pressing
 
@@ -143,22 +146,63 @@ A reusable UdonSharp component that turns any object into a physically pushable 
   *Check:* the scene is saved, and a ClientSim desktop click logs once.
   Done: both optional changes were made. The parent is now `PushButtonAssembly`, rotated (0, 180, 0), so the button is at world (0, 1, -0.03) and faces the spawn. The scene was edited by a new idempotent menu item, `Tools/PushButton/Wire Up Scene` (in `PushButtonPlayModeTests.cs`, replacing `Add PushButton To Scene Button`). It renames and rotates the parent, makes sure the child has a `PushButton`, adds a `ButtonActionExample` (no `toggleTarget`) to `PushButtonAssembly`, sets `localPressAxis` (0, 0, -1), `travelDistance` 0.019, `targetBehaviour` (the example's backing UdonBehaviour) and `eventName` `OnButtonPressed` through a `SerializedObject` on the proxy plus `CopyProxyToUdon`, and saves the scene. UdonSharp also set the button's backing `_syncMethod` in the scene (Unity-generated). Temporary code removed from `PushButton.cs`: the `rest local` log (2.1), the `tracking N players` log (5.1), and `handEarlyOutSkips` (6.2). **Harness:** `ButtonPath` is now `PushButtonAssembly/Button`. The tracking-log counts and `CheckSkips` were removed; the tracked-player array checks and the early-out's tip and press checks still cover the same behaviour. The `press unrotated` "1 mm in front of plate" check now uses `buttonParent.TransformPoint(0, 0, 0.011)` instead of a fixed world point. New `AddSceneWiringTest` (first) checks the saved wiring: parent at (0, 180, 0), travel 0.019, axis (0, 0, -1), and the target is the parent's UdonBehaviour running `ButtonActionExample.asset` with `OnButtonPressed`. It then clicks through `ClientSimUdonHelper.Interact()`; one second later there is exactly one `[ButtonActionExample] pressed` log and the button is back at rest. UdonSharp compiled 10 scripts with no errors. Result: `[PushButtonTest] done: 371 passed, 0 failed`, 0 errors. The test log has `scene wiring: desktop click, 1 action logs` and no `[PushButton]` debug lines.
 
-### Phase 8: Verification
+### Phase 8: Shared manager
 
-- [x] **8.1 Run the editor regression pass.**
+Moves the per-frame work out of each button into one `PushButtonManager`, makes enabling and disabling buttons safe, and adds the build-time wiring check. Steps 5.1, 5.2, 5.4, 6.1 and 6.2 move into the manager; 5.3's engagement, Phases 2–4 and 5.5 stay on the button. Every step keeps the whole Play Mode suite passing, updating older tests where the move changes how they drive the button.
+
+- [ ] **8.1 Add the manager and make it required.**
+  Add `Assets/PushButton/PushButtonManager.cs` and its `PushButtonManager.asset` program asset (`NoVariableSync`). Give `PushButton` a `manager` field (new `Setup` Inspector group, see [Inspector fields](#inspector-fields)). Move player tracking (5.1) from the button into the manager, using stable player slots (see [Manager](#manager)). Remove `OnPlayerJoined` / `OnPlayerLeft` / `trackedPlayers` from the button. A button with no manager is inert: it logs one warning, sets `DisableInteractive = true`, never moves and never fires.
+  *Check:* compiles. Tests: the manager's slots match `GetPlayerCount()` through ClientSim joins and leaves, a reused slot gets a new generation, and a button with no manager logs exactly one warning, can't be clicked, ignores the debug fingertip and stays at rest.
+
+- [ ] **8.2 Cache fingertips once per player per frame.**
+  Move fingertip estimation (5.2), the VR filter (5.4) and the hand early-out (6.2) into the manager. Each frame, for each VR player, it reads the two hand bones. Only if a hand is within the early-out range of an active in-range button does it read the finger bones, and only for the fingers some such button uses. It publishes per-slot arrays (see [Manager](#manager)). Buttons read those arrays and keep their own engagement state (5.3) and their own radius (`fingertipRadius` × the slot's avatar scale).
+  *Check:* the existing fingertip, VR filter, remote press, haptics and early-out tests pass. New test: hook `VRCPlayerApi._GetBonePosition` (like the 5.4 `IsUserInVR` hook) and count calls per frame with 1 and with 10 in-range buttons around the same player. The counts are equal.
+
+- [ ] **8.3 Let the manager drive the buttons.**
+  Remove `Update` from `PushButton`. The manager's `Update` loops over the registered buttons. It does the range gate (6.1) per button against the local player, calls the button's out-of-range reset once on leaving range, and calls a per-frame tick on in-range buttons (rest pose, fingertip presses from the manager's arrays, click, trigger, press amount, apply). Buttons that are out of range or disabled cost nothing beyond the range check.
+  *Check:* the whole existing suite passes with the scene button driven by the manager. New test: 10 buttons in range and 40 beyond 5 m. Only the 10 tick, and pressing one never moves another.
+
+- [ ] **8.4 Make enabling and disabling safe.**
+  Implement every rule in [Enable and disable](#enable-and-disable).
+  *Check:* new `AddEnableDisableTest`, each case run by turning off the button's GameObject, a parent GameObject and the button's UdonBehaviour:
+  - disabled mid-press (local finger, remote finger, local click, networked click): snaps to rest, armed, nothing engaged; re-enabled with the finger still inside: doesn't engage until it comes in from the front;
+  - a button that starts disabled, then is enabled with players already present: local and remote VR fingers press it;
+  - a player joins and another leaves while it is disabled: after enabling, both are handled correctly and no stale state shows up;
+  - the parent moved while disabled: re-enabled at the new rest pose;
+  - the button's own action disables it, enables another button, or disables another button: no error, no move after the disable, the registration list has no duplicates or holes, and the other buttons keep working;
+  - 20 disable/enable toggles in one frame: registered exactly once;
+  - a networked click arriving while disabled: ignored;
+  - manager disabled mid-press: every button snaps to rest; manager re-enabled after a join: the new player presses.
+
+- [ ] **8.5 Skip transform writes when nothing changed.**
+  The button remembers the press it last applied and only writes `transform.position` when the press changes, and once after an enable or reset. A button at rest stops touching its transform, so its collider stays out of physics updates.
+  *Check:* with `transform.hasChanged` cleared, a button at rest for 1 s hasn't changed; pressed, released and back at rest, it has. The full suite still passes.
+
+- [ ] **8.6 Update the inspector and scene wiring.**
+  The inspector shows the `manager` field and a warning box when it isn't the scene's first manager (see [Build-time check](#build-time-check)), with a **Fix** button that runs the same wiring code as the build check. `Tools/PushButton/Wire Up Scene` adds a `PushButtonManager` object at the scene root and wires the scene button to it.
+  *Check:* the scene is saved with the manager and the wiring. `AddSceneWiringTest` checks it, and a ClientSim desktop click still logs once. The inspector test checks the warning shows for a null and a wrong manager and not for the right one.
+
+- [ ] **8.7 Add the build-time check.**
+  Add `Assets/PushButton/Editor/PushButtonBuildCheck.cs`, implementing the VRChat SDK's `IVRCSDKBuildRequestedCallback` (it runs on Build & Test and Build & Upload). Follow [Build-time check](#build-time-check). Keep the decision logic separate from the dialog so tests can answer for it, and add `Tools/PushButton/Check Manager Wiring` to run it by hand or from automation.
+  *Check:* Edit Mode tests (answering through the test hook, then restoring the scene): no manager + yes adds one and wires every button, including inactive ones; no manager + no changes nothing; a correctly wired scene asks nothing; a null manager, a second manager, and proxy/Udon data that disagree each count as unwired and are fixed on yes and untouched on no; two managers log the warning and use the first in hierarchy order; a scene with no buttons asks nothing. Every case returns true, so the build continues.
+
+### Phase 9: Verification
+
+- [ ] **9.1 Run the editor regression pass.**
   Repeat the checks from 4.2, 5.3 and 6.1 with the parent rotated to (35, 120, -70), and again with `ButtonPlate` disabled.
   *Check:* all pass in both setups.
-  Done: `AddClickTest` (4.2), `AddEngagementTest` (5.3) and `AddRangeGateTest` (6.1) now take an optional `setup` suffix for their check names. A new `AddRegressionPass(setup, plateActive)`, run twice after the inspector test, moves the parent to its scene position + (1, 0.5, -2) (1.8 m from the local player, well inside the 5 m gate), rotates it to (35, 120, -70), sets `ButtonPlate` active or disabled, checks the rest pose follows the parent and the button is at rest and armed, then runs those three tests again: first as ` (rotated parent)` with the plate on, then as ` (no plate)` with the parent still rotated and the plate disabled. `AddRegressionCleanup` then puts the parent and plate back. The scene pose is recorded in `AddSceneWiringTest`'s first step (`sceneParentPos`/`sceneParentRot`). No changes to `PushButton.cs`. UdonSharp compiled 10 scripts with no errors. Result: `[PushButtonTest] done: 627 passed, 0 failed` (up from 371), 0 errors. Both setups logged 2 action logs for the engagement and range gate passes, as in the unrotated run. The `play` timeout went from 120 to 180 s because the run now takes about 90 s.
+  This was done before Phase 8 (as step 8.1). It has to be re-run once Phase 8 is done. Previous run: `AddClickTest` (4.2), `AddEngagementTest` (5.3) and `AddRangeGateTest` (6.1) now take an optional `setup` suffix for their check names. A new `AddRegressionPass(setup, plateActive)`, run twice after the inspector test, moves the parent to its scene position + (1, 0.5, -2) (1.8 m from the local player, well inside the 5 m gate), rotates it to (35, 120, -70), sets `ButtonPlate` active or disabled, checks the rest pose follows the parent and the button is at rest and armed, then runs those three tests again: first as ` (rotated parent)` with the plate on, then as ` (no plate)` with the parent still rotated and the plate disabled. `AddRegressionCleanup` then puts the parent and plate back. The scene pose is recorded in `AddSceneWiringTest`'s first step (`sceneParentPos`/`sceneParentRot`). No changes to `PushButton.cs`. UdonSharp compiled 10 scripts with no errors. Result: `[PushButtonTest] done: 627 passed, 0 failed` (up from 371), 0 errors. Both setups logged 2 action logs for the engagement and range gate passes, as in the unrotated run. The `play` timeout went from 120 to 180 s because the run now takes about 90 s.
 
-- [x] **8.2 Set up testing automation.** Done: the editor trigger is installed and `TestingAutomation.md` exists. Compile checks in every step can use the trigger's `refresh`. Play Mode tests should log `[PushButtonTest] done: N passed, M failed` (see `TestingAutomation.md`). The world ID and test instance URL are recorded there too.
+- [x] **9.2 Set up testing automation.** (Formerly 8.2.) Done: the editor trigger is installed and `TestingAutomation.md` exists. Compile checks in every step can use the trigger's `refresh`. Play Mode tests should log `[PushButtonTest] done: N passed, M failed` (see `TestingAutomation.md`). The world ID and test instance URL are recorded there too.
 
-- [ ] **8.3 Run the multi-client test (built world, 2+ clients).**
+- [ ] **9.3 Run the multi-client test (built world, 2+ clients).**
   Cover every cell of [Who sees what](#who-sees-what):
   - desktop click on A → animates on a desktop B **and** a VR B; action log only on A;
   - VR push on A → animates on a desktop B **and** a VR B; action log only on A;
-  - B more than 5 m away → no animation and no errors.
+  - B more than 5 m away → no animation and no errors;
+  - a button that starts disabled and is enabled after B joins → B's VR push animates it on A.
 
-- [ ] **8.4 Run the real VR test (headset).**
+- [ ] **9.4 Run the real VR test (headset).**
   Push with either index finger. Check that haptics fire, the stop is flush with no z-fighting, and there are no false presses when reaching past the button.
 
 ---
@@ -176,6 +220,7 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 - The flush point is 0.02 m of travel. With a 1 mm anti-z-fighting margin, `travelDistance` is **0.019 m**.
 - The parent and the child were both named `Button`. Step 7.2 renamed the parent to `PushButtonAssembly` and turned it 180° on Y to face the spawn.
 - The spawn point (z = -2.558, facing +Z) looks at the **back** of the plate. Rotating the parent 180° on Y makes the button face the spawn.
+- Step 8.6 adds a `PushButtonManager` object at the scene root and wires the button to it.
 
 ### Who sees what
 
@@ -202,10 +247,46 @@ private const float AnimationRange = 5f;   // meters
 private const float AnimationRangeSqr = AnimationRange * AnimationRange;
 ```
 
+From Phase 8 the range constants, `HandEarlyOutDistance`, `FingertipExtrapolation` and `ReferenceEyeHeight` live on `PushButtonManager`. `FireTolerance` and the haptic constants stay on `PushButton`.
+
+### Manager
+
+- **Required.** Every `PushButton` has a `manager` field. With no manager, the button does nothing at all, clicks included (see 8.1).
+- **One per scene.** If there are several, buttons are wired to the first in hierarchy order: root objects in scene order, then depth first by sibling index. The others drive nothing.
+- **Players** live in stable slots. A joining player takes a free slot and a leaving player frees theirs, so slots never shift. Each slot has a generation number that goes up whenever the slot gets a new player. A button stores the generation it last saw per slot and clears that slot's engagement state when it changes, so a new player never inherits a press. The slot arrays grow when needed; there's no fixed player cap. The manager also rebuilds its slots from `GetPlayers` in `OnEnable`, so it recovers if it was ever disabled.
+- **Per-frame cache** (per slot, written once per frame by the manager, read by every in-range button): valid, is local, in VR, hand positions, near-a-button flag, fingertip positions and validity (left index, right index, left middle, right middle), and avatar scale (eye height / 1.6 m). Buttons read the arrays once per tick, not per element. Bone reads then scale with players, not with players × buttons.
+- **Ticking.** Only the manager has an `Update`. Per registered button it does the range check. It calls the button's reset once on leaving range, and its tick while in range.
+- **Registration** is an array of buttons. Register and unregister are idempotent. Changes requested while the manager is ticking (an action enabling or disabling buttons) are deferred and applied after the loop, so the loop never sees a changing list.
+
+### Enable and disable
+
+A disabled button holds no state that can go stale, so turning it off and on at any time, in any way, has no effect beyond the button being off.
+
+- **What counts as disabled:** its GameObject or any parent turned off, or its UdonBehaviour turned off. All three run `OnDisable`, and destroying a button runs it too.
+- **`OnEnable`:** registers with the manager. On the first enable it also does what `Start` did (rest pose, contact box, input mode), so it doesn't rely on `Start` order or on the manager having run `Start`. Every enable re-reads the rest pose from the parent and starts at rest, armed, with nothing engaged.
+- **`OnDisable`:** unregisters, snaps to rest, clears all engagement, click and press state, and re-arms. A finger still inside when it comes back has to come in from the front again.
+- **No player state on the button** beyond engagement per manager slot, which is cleared on disable and checked against the slot generation. Joins and leaves while a button is disabled therefore can't leave it with a stale or missing player.
+- **The rest pose is never captured from a pressed position**, because a button is always at rest when disabled.
+- **Actions that change buttons:** if a button's own action disables it, its tick stops straight after the action and doesn't move it again. Enabling or disabling other buttons from an action is deferred by the manager (see [Manager](#manager)).
+- **Networked clicks** that reach a disabled or unregistered button are ignored.
+- **Manager disabled:** it resets every registered button to rest and stops ticking. Buttons stay registered. When it is re-enabled it rebuilds its player slots and carries on.
+
+### Build-time check
+
+`PushButtonBuildCheck` runs when a VRChat build is requested and **always lets the build continue**. It looks at every `PushButton` in the loaded scenes, including inactive ones.
+
+- **No buttons:** nothing happens.
+- **No manager:** a dialog asks to add one and wire the buttons. **Yes** creates a `PushButtonManager` GameObject at the scene root, wires every button and saves the scene. **No** changes nothing.
+- **Several managers:** a warning names the one used (the first in hierarchy order) and the ones ignored. This is logged on every check.
+- **Unwired buttons:** a button is wired only if its `manager` is exactly the first manager, in both the UdonSharp proxy and the UdonBehaviour's data. Null, missing, another manager, or the two disagreeing all count as unwired. If any are unwired, a dialog gives the count and asks to fix them. **Yes** wires them and saves the scene. **No** changes nothing.
+- Fixes go through `SerializedObject` plus `CopyProxyToUdon`, with Undo, and the scene is saved so the build includes them.
+- The dialog is only shown when something is wrong, so an unattended build of a correctly wired scene never stops at a dialog.
+
 ### Inspector fields
 
 | Group | Field | Default | Purpose |
 |---|---|---|---|
+| Setup | `PushButtonManager manager` | – | Required. The scene's manager (see [Manager](#manager)) |
 | Action | `UdonBehaviour targetBehaviour` | – | Behaviour to call (works with both UdonSharp and Graph programs) |
 | | `string eventName` | – | Event passed to `SendCustomEvent`, which runs on the presser's client only |
 | Travel | `Vector3 localPressAxis` | (0, 0, -1) | Press direction in the button's local space |
@@ -236,6 +317,7 @@ private const float AnimationRangeSqr = AnimationRange * AnimationRange;
 
 - **Remote presses lag slightly:** synced bone data is interpolated and slightly delayed, so remote viewers see the button move a little behind the presser's finger.
 - **Remote runs can briefly disagree:** a jittery remote finger near the face can show a small press the presser didn't see. This only affects visuals; the action is never fired remotely.
-- **CPU scales with players in range:** cost is roughly (VR players near the button) × (enabled fingertips), only for buttons within 5 m. The 0.5 m hand early-out keeps it to a few distance checks per player.
+- **CPU scales with players and nearby buttons:** before Phase 8, every button within 5 m read every VR player's bones each frame, so the cost was buttons × players. With the manager, bones are read once per player per frame, and each in-range button (expected 5–10 at a time) only does rest-frame math on cached positions. Buttons beyond 5 m cost one distance check each.
+- **Cross-behaviour calls cost more in Udon:** the manager calls each in-range button's tick, and buttons read the manager's arrays. These calls are kept to one per button per frame and one read per array per tick.
 - **Contact shape is the local bounding box:** for strongly non-box shapes, presses near the corners register slightly outside the visible mesh. `Collider.ClosestPoint` could tighten this.
 - **Fingertip estimate varies by avatar:** the extrapolation is approximate, and `fingertipRadius` absorbs most of the variation.
