@@ -3,6 +3,7 @@ using UdonSharpEditor;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using VRC.SDK3.ClientSim;
 using VRC.SDKBase;
 using VRC.Udon;
@@ -19,6 +20,9 @@ public static class PushButtonPlayModeTests
     const string ArmedKey = "PushButtonTest.armed";
     const string AssemblyName = "PushButtonAssembly";
     const string ButtonPath = AssemblyName + "/Button";
+    const string ManagerName = "PushButtonManager";
+    const string NoManagerName = "PushButtonTestNoManager";
+    const string ButtonProgramPath = "Assets/PushButton/PushButton.asset";
     const string ExampleProgramPath = "Assets/PushButton/Examples/ButtonActionExample.asset";
     const float Tolerance = 0.0001f;
 
@@ -53,6 +57,10 @@ public static class PushButtonPlayModeTests
     static readonly HashSet<int> simulatedVRPlayers = new HashSet<int>();
     static bool isUserInVROverridden;
     static int hapticCount;
+    static int noManagerWarnings;
+    static UdonBehaviour savedButton;
+    static GameObject noManagerButton;
+    static Vector3 noManagerStartPos;
     static VRC_Pickup.PickupHand lastHapticHand;
     static float lastHapticAmplitude;
     static float savedHapticStrength;
@@ -71,7 +79,8 @@ public static class PushButtonPlayModeTests
 
     // Plan step 7.2: renames the parent to PushButtonAssembly and turns it 180° on Y to face the spawn, gives the child
     // button a PushButton with travel 0.019 along local -Z, points it at a ButtonActionExample on the parent with
-    // OnButtonPressed, and saves the scene. Safe to run again.
+    // OnButtonPressed, wires it to the scene's first PushButtonManager (adding one at the scene root if there is none,
+    // plan step 8.1), and saves the scene. Safe to run again.
     [MenuItem("Tools/PushButton/Wire Up Scene")]
     static void WireUpScene()
     {
@@ -92,7 +101,17 @@ public static class PushButtonPlayModeTests
         ButtonActionExample example = parent.GetComponent<ButtonActionExample>();
         if (example == null) example = UdonSharpUndo.AddComponent<ButtonActionExample>(parent.gameObject);
 
+        PushButtonManager manager = FirstManager(go.scene);
+        if (manager == null)
+        {
+            GameObject managerObject = new GameObject(ManagerName);
+            SceneManager.MoveGameObjectToScene(managerObject, go.scene);
+            Undo.RegisterCreatedObjectUndo(managerObject, "Wire Up PushButton Scene");
+            manager = UdonSharpUndo.AddComponent<PushButtonManager>(managerObject);
+        }
+
         SerializedObject serialized = new SerializedObject(pushButton);
+        serialized.FindProperty("manager").objectReferenceValue = manager;
         serialized.FindProperty("localPressAxis").vector3Value = new Vector3(0f, 0f, -1f);
         serialized.FindProperty("travelDistance").floatValue = 0.019f;
         serialized.FindProperty("targetBehaviour").objectReferenceValue = UdonSharpEditorUtility.GetBackingUdonBehaviour(example);
@@ -105,12 +124,24 @@ public static class PushButtonPlayModeTests
         Debug.Log("[PushButtonTest] wired up " + ButtonPath + " and saved " + go.scene.name);
     }
 
+    // The scene's first PushButtonManager in hierarchy order (root objects in scene order, then depth first), or null.
+    static PushButtonManager FirstManager(UnityEngine.SceneManagement.Scene scene)
+    {
+        foreach (GameObject root in scene.GetRootGameObjects())
+        {
+            PushButtonManager manager = root.GetComponentInChildren<PushButtonManager>(true);
+            if (manager != null) return manager;
+        }
+        return null;
+    }
+
     static void OnPlayModeStateChanged(PlayModeStateChange change)
     {
         if (change == PlayModeStateChange.ExitingPlayMode)
         {
             EditorApplication.update -= Tick;
             Application.logMessageReceived -= CountActionLogs;
+            Application.logMessageReceived -= CountNoManagerWarnings;
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
         }
@@ -137,10 +168,12 @@ public static class PushButtonPlayModeTests
         AddPressTest("press rotated parent", false);
         AddGizmoTest("gizmo rotated parent");
         AddPlayerTrackingTest();
+        AddManagerSlotsTest();
         AddRemotePressTest();
         AddVRFilterTest();
         AddHapticsTest();
         AddHandEarlyOutTest();
+        AddNoManagerTest();
         AddInspectorTest();
         AddRegressionPass(" (rotated parent)", true);
         AddRegressionPass(" (no plate)", false);
@@ -196,6 +229,9 @@ public static class PushButtonPlayModeTests
                 && target.programSource == program, target == null ? "no target" : "got " + target.gameObject.name + " running " + target.programSource);
             string eventName = (string)button.GetProgramVariable("eventName");
             Check(name + " event OnButtonPressed", eventName == "OnButtonPressed", "got \"" + eventName + "\"");
+            UdonBehaviour manager = ManagerOf(button);
+            Check(name + " wired to the scene's manager", manager != null && manager.gameObject.name == ManagerName && manager.transform.parent == null,
+                manager == null ? "no manager" : "got " + manager.gameObject.name);
 
             actionCount = 0;
             Application.logMessageReceived += CountActionLogs;
@@ -1103,7 +1139,7 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan steps 5.1 and 5.3: the button tracks everyone in the instance, and keeps the list current on each join and leave.
+    // Plan steps 5.1 and 5.3 (player tracking moved to the manager in 8.1): everyone in the instance is tracked, and keeps the list current on each join and leave.
     // Moves the button onto the local ClientSim avatar's left index fingertip so it engages for real (from in front,
     // then half the travel in), spawns two ClientSim remote players, removes them one at a time, and checks the press
     // survives every refresh.
@@ -1156,8 +1192,7 @@ public static class PushButtonPlayModeTests
             CheckTrackedPlayers(name + " after a leave");
             CheckLocalFingertipKept(name + " after leave");
             VRCPlayerApi remoteB = FindPlayer("PushButtonTest Remote B");
-            Check(name + " remote B tracked", remoteB != null &&
-                System.Array.IndexOf((VRCPlayerApi[])button.GetProgramVariable("trackedPlayers"), remoteB) >= 0, "missing");
+            Check(name + " remote B tracked", SlotOf(remoteB, 0) >= 0, "missing");
             if (remoteB != null) ClientSimMain.RemovePlayer(remoteB);
         });
         AddStep(1f, () =>
@@ -1175,6 +1210,140 @@ public static class PushButtonPlayModeTests
             Check(name + " released once the button moves away", slot >= 0 && !((bool[])button.GetProgramVariable("fingertipEngaged"))[slot]
                 && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
         });
+    }
+
+    // Plan step 8.1: the manager keeps every player in a stable slot. Two remote players join and one leaves: the
+    // slots still match GetPlayerCount, and a third player who joins takes the freed slot with a new generation.
+    static void AddManagerSlotsTest()
+    {
+        const string name = "manager slots";
+        int freedSlot = -1;
+        int freedGeneration = 0;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            CheckTrackedPlayers(name + " at start");
+            ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote F");
+            ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote G");
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            CheckTrackedPlayers(name + " after two joins");
+            VRCPlayerApi remoteF = FindPlayer("PushButtonTest Remote F");
+            int tip = SlotOf(remoteF, 0);
+            if (!Check(name + ": remote F has a slot", tip >= 0, "no slot")) { button = null; return; }
+            freedSlot = tip / 4;
+            freedGeneration = ((int[])ManagerOf(button).GetProgramVariable("slotGenerations"))[freedSlot];
+            ClientSimMain.RemovePlayer(remoteF);
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            CheckTrackedPlayers(name + " after a leave");
+            VRCPlayerApi[] slots = (VRCPlayerApi[])ManagerOf(button).GetProgramVariable("slotPlayers");
+            Check(name + " leaving player's slot freed", slots[freedSlot] == null, "slot " + freedSlot + " still taken");
+            Check(name + " remote G kept a slot", SlotOf(FindPlayer("PushButtonTest Remote G"), 0) >= 0, "missing");
+            ClientSimMain.SpawnRemotePlayer("PushButtonTest Remote H");
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            CheckTrackedPlayers(name + " after a rejoin");
+            int tip = SlotOf(FindPlayer("PushButtonTest Remote H"), 0);
+            int slot = tip < 0 ? -1 : tip / 4;
+            int generation = slot >= 0 ? ((int[])ManagerOf(button).GetProgramVariable("slotGenerations"))[slot] : -1;
+            Debug.Log("[PushButtonTest] " + name + ": remote H in slot " + slot + " generation " + generation + ", freed slot " + freedSlot + " was generation " + freedGeneration);
+            // Remote F took the lowest free slot and remote G the next one, so F's slot is the lowest free one again.
+            Check(name + " new player reuses the freed slot", slot == freedSlot, "slot " + slot + ", freed " + freedSlot);
+            Check(name + " reused slot gets a new generation", generation == freedGeneration + 1, "generation " + generation + ", was " + freedGeneration);
+            ClientSimMain.RemovePlayer(FindPlayer("PushButtonTest Remote H"));
+            ClientSimMain.RemovePlayer(FindPlayer("PushButtonTest Remote G"));
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            CheckTrackedPlayers(name + " after all left");
+        });
+    }
+
+    // Plan step 8.1: a button with no manager is inert. A PushButton created at runtime without one logs exactly one
+    // warning, can't be clicked (not interactive, and a direct Interact or networked click does nothing), ignores the
+    // debug fingertip and stays at rest.
+    static void AddNoManagerTest()
+    {
+        const string name = "no manager";
+        float travel = 0f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            savedButton = button;
+            AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ButtonProgramPath);
+            if (!Check(name + ": load PushButton program", program != null && program.SerializedProgramAsset != null, "no program asset")) { button = null; return; }
+
+            noManagerButton = new GameObject(NoManagerName);
+            noManagerButton.SetActive(false);
+            noManagerButton.transform.SetPositionAndRotation(go.transform.position + new Vector3(0.2f, 0f, 0f), go.transform.rotation);
+            noManagerButton.transform.localScale = go.transform.lossyScale;
+            noManagerButton.AddComponent<BoxCollider>();
+            UdonBehaviour inert = noManagerButton.AddComponent<UdonBehaviour>();
+            inert.AssignProgramAndVariables(program.SerializedProgramAsset, new UdonVariableTable());
+            noManagerWarnings = 0;
+            Application.logMessageReceived += CountNoManagerWarnings;
+            noManagerButton.SetActive(true);
+            inert.InitializeUdonContent();
+            noManagerStartPos = noManagerButton.transform.position;
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            UdonBehaviour inert = noManagerButton.GetComponent<UdonBehaviour>();
+            button = inert;
+            travel = (float)inert.GetProgramVariable("travelDistance");
+            Check(name + ": manager unset", ManagerOf(inert) == null, "has a manager");
+            Check(name + " interact disabled", inert.DisableInteractive && !inert.IsInteractive, "DisableInteractive " + inert.DisableInteractive);
+            ClientSimUdonHelper helper = noManagerButton.GetComponent<ClientSimUdonHelper>();
+            Check(name + " ClientSim can't interact", helper == null || !helper.CanInteract(), "CanInteract true");
+            inert.Interact();
+            inert.SendCustomEvent("NetPlayClickAnimation");
+            PlaceDebugTip(-0.01f, 0f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            Check(name + " click ignored", !(bool)button.GetProgramVariable("clickActive") && (float)button.GetProgramVariable("pressAmount") == 0f,
+                "clickActive " + button.GetProgramVariable("clickActive") + ", press " + button.GetProgramVariable("pressAmount"));
+            PlaceDebugTip(travel * 1.5f, 0f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + " debug fingertip ignored", (float)button.GetProgramVariable("localPress") == 0f && !(bool)button.GetProgramVariable("debugEngaged") && press == 0f,
+                "localPress " + button.GetProgramVariable("localPress") + ", press " + press.ToString("F5"));
+            Check(name + " stays at rest", Near(noManagerButton.transform.position, noManagerStartPos), "moved to " + noManagerButton.transform.position.ToString("F4"));
+            Check(name + " still armed", (bool)button.GetProgramVariable("armed"), "disarmed");
+        });
+        AddStep(0.5f, () =>
+        {
+            Application.logMessageReceived -= CountNoManagerWarnings;
+            Debug.Log("[PushButtonTest] " + name + ": " + noManagerWarnings + " warnings");
+            if (noManagerButton != null) Check(name + " warns exactly once", noManagerWarnings == 1, noManagerWarnings + " warnings");
+            RemoveDebugTip();
+            if (noManagerButton != null) Object.Destroy(noManagerButton);
+            noManagerButton = null;
+            button = savedButton;
+        });
+    }
+
+    static void CountNoManagerWarnings(string message, string stackTrace, LogType type)
+    {
+        if (type == LogType.Warning && message.Contains("[PushButton] " + NoManagerName + ": no manager")) noManagerWarnings++;
     }
 
     // Plan step 5.3: a remote player's fingertip feeds remotePress, which moves the button but never fires. Spawns a
@@ -1583,29 +1752,48 @@ public static class PushButtonPlayModeTests
         isUserInVROverridden = false;
     }
 
-    // The tracked list holds exactly the valid players in the instance, with four fingertip slots each.
+    // The manager's slots hold exactly the valid players in the instance, each once, and the button keeps four
+    // fingertip slots for each of the manager's slots.
     static void CheckTrackedPlayers(string name)
     {
-        VRCPlayerApi[] tracked = (VRCPlayerApi[])button.GetProgramVariable("trackedPlayers");
+        UdonBehaviour manager = ManagerOf(button);
+        if (!Check(name + " manager", manager != null, "no manager")) return;
+        VRCPlayerApi[] slots = (VRCPlayerApi[])manager.GetProgramVariable("slotPlayers");
+        int[] generations = (int[])manager.GetProgramVariable("slotGenerations");
         bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
         bool[] wasInFront = (bool[])button.GetProgramVariable("fingertipWasInFront");
         int expected = VRCPlayerApi.GetPlayerCount();
-        Debug.Log("[PushButtonTest] " + name + ": tracking " + tracked.Length + " of " + expected + " players");
-        Check(name + " count", tracked.Length == expected, "tracking " + tracked.Length + ", expected " + expected);
-        Check(name + " state arrays", engaged.Length == tracked.Length * 4 && wasInFront.Length == tracked.Length * 4,
-            "engaged " + engaged.Length + ", wasInFront " + wasInFront.Length);
+        int count = 0;
         bool allValid = true;
-        foreach (VRCPlayerApi player in tracked) allValid &= Utilities.IsValid(player);
-        Check(name + " all valid", allValid, "an invalid player is tracked");
-        Check(name + " local player tracked", System.Array.IndexOf(tracked, Networking.LocalPlayer) >= 0, "missing");
+        bool noDuplicates = true;
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] == null) continue;
+            count++;
+            allValid &= Utilities.IsValid(slots[i]);
+            noDuplicates &= System.Array.IndexOf(slots, slots[i]) == i;
+        }
+        Debug.Log("[PushButtonTest] " + name + ": " + count + " of " + expected + " players in " + slots.Length + " slots");
+        Check(name + " count", count == expected, count + " in slots, expected " + expected);
+        Check(name + " generations array", generations.Length == slots.Length, generations.Length + " generations for " + slots.Length + " slots");
+        Check(name + " state arrays", engaged.Length == slots.Length * 4 && wasInFront.Length == slots.Length * 4,
+            "engaged " + engaged.Length + ", wasInFront " + wasInFront.Length + " for " + slots.Length + " slots");
+        Check(name + " all valid", allValid, "an invalid player has a slot");
+        Check(name + " no duplicates", noDuplicates, "a player has two slots");
+        Check(name + " local player tracked", System.Array.IndexOf(slots, Networking.LocalPlayer) >= 0, "missing");
     }
 
     static void CheckLocalFingertipKept(string name)
     {
-        VRCPlayerApi[] tracked = (VRCPlayerApi[])button.GetProgramVariable("trackedPlayers");
         bool[] engaged = (bool[])button.GetProgramVariable("fingertipEngaged");
-        int local = System.Array.IndexOf(tracked, Networking.LocalPlayer);
-        Check(name + " fingertip state kept", local >= 0 && engaged[local * 4], "local fingertip state lost");
+        int slot = SlotOf(Networking.LocalPlayer, 0);
+        Check(name + " fingertip state kept", slot >= 0 && engaged[slot], "local fingertip state lost");
+    }
+
+    // The button's manager (the UdonBehaviour behind its manager field), or null.
+    static UdonBehaviour ManagerOf(UdonBehaviour pushButton)
+    {
+        return pushButton != null ? pushButton.GetProgramVariable("manager") as UdonBehaviour : null;
     }
 
     static VRCPlayerApi FindPlayer(string displayName)
@@ -1765,9 +1953,12 @@ public static class PushButtonPlayModeTests
         return true;
     }
 
+    // The index of the player's fingertip in the button's per-slot state arrays (from the manager's slot), or -1.
     static int SlotOf(VRCPlayerApi player, int fingertip)
     {
-        int index = System.Array.IndexOf((VRCPlayerApi[])button.GetProgramVariable("trackedPlayers"), player);
+        UdonBehaviour manager = ManagerOf(button);
+        if (manager == null || player == null) return -1;
+        int index = System.Array.IndexOf((VRCPlayerApi[])manager.GetProgramVariable("slotPlayers"), player);
         return index < 0 ? -1 : index * 4 + fingertip;
     }
 

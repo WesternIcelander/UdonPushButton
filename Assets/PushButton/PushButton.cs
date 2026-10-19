@@ -16,6 +16,10 @@ public class PushButton : UdonSharpBehaviour
     private const float AnimationRange = 5f;   // meters
     private const float AnimationRangeSqr = AnimationRange * AnimationRange;
 
+    [Header("Setup")]
+    [Tooltip("Required. The scene's PushButtonManager. Without one the button does nothing.")]
+    public PushButtonManager manager;
+
     [Header("Action")]
     [Tooltip("Behaviour to call when the button is pressed (UdonSharp or Graph program).")]
     public UdonBehaviour targetBehaviour;
@@ -97,11 +101,12 @@ public class PushButton : UdonSharpBehaviour
 
     // Fingertip slots per player: left index, right index, left middle, right middle.
     private const int FingertipsPerPlayer = 4;
-    // Everyone in the instance, refreshed on join and leave (never in Update), with per-player, per-fingertip state
-    // in parallel arrays: fingertip f of trackedPlayers[i] is at index i * FingertipsPerPlayer + f.
-    private VRCPlayerApi[] trackedPlayers = new VRCPlayerApi[0];
+    // Per-fingertip state for each of the manager's player slots: fingertip f of slot i is at index
+    // i * FingertipsPerPlayer + f. seenGenerations[i] is the slot's generation the state belongs to; when the manager
+    // gives the slot a new player, the state is cleared so the new player never inherits a press.
     private bool[] fingertipEngaged = new bool[0];
     private bool[] fingertipWasInFront = new bool[0];
+    private int[] seenGenerations = new int[0];
 
     // The fingertip lies this fraction of the last finger segment (intermediate -> distal) beyond the distal bone.
     private const float FingertipExtrapolation = 0.8f;
@@ -142,6 +147,11 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         ComputeContactBox(true);
         SetUpLocalInput();
+        if (manager == null)
+        {
+            Debug.LogWarning("[PushButton] " + name + ": no manager is set, so the button does nothing");
+            DisableInteractive = true;
+        }
     }
 
     /// <summary>
@@ -167,55 +177,24 @@ public class PushButton : UdonSharpBehaviour
         }
     }
 
-    public override void OnPlayerJoined(VRCPlayerApi player)
-    {
-        RefreshPlayers(null);
-    }
-
-    public override void OnPlayerLeft(VRCPlayerApi player)
-    {
-        // The leaving player is still in the player list during this event, so leave them out explicitly.
-        RefreshPlayers(player);
-    }
-
     /// <summary>
-    /// Rebuilds the cached player list (without the leaving player, if any) and the per-fingertip state arrays,
-    /// carrying over the state of players who were already tracked so a join or leave doesn't drop a press.
+    /// Grows the per-slot state arrays to the manager's slot count, keeping the state already there.
     /// </summary>
-    private void RefreshPlayers(VRCPlayerApi leaving)
+    private void MatchSlotCount(int slotCount)
     {
-        VRCPlayerApi[] all = new VRCPlayerApi[VRCPlayerApi.GetPlayerCount()];
-        VRCPlayerApi.GetPlayers(all);
-        int count = 0;
-        for (int i = 0; i < all.Length; i++)
+        if (seenGenerations.Length >= slotCount) return;
+        bool[] engaged = new bool[slotCount * FingertipsPerPlayer];
+        bool[] wasInFront = new bool[slotCount * FingertipsPerPlayer];
+        int[] generations = new int[slotCount];
+        for (int i = 0; i < fingertipEngaged.Length; i++)
         {
-            if (Utilities.IsValid(all[i]) && all[i] != leaving) count++;
+            engaged[i] = fingertipEngaged[i];
+            wasInFront[i] = fingertipWasInFront[i];
         }
-
-        VRCPlayerApi[] players = new VRCPlayerApi[count];
-        bool[] engaged = new bool[count * FingertipsPerPlayer];
-        bool[] wasInFront = new bool[count * FingertipsPerPlayer];
-        int next = 0;
-        for (int i = 0; i < all.Length; i++)
-        {
-            VRCPlayerApi player = all[i];
-            if (!Utilities.IsValid(player) || player == leaving) continue;
-            players[next] = player;
-            for (int old = 0; old < trackedPlayers.Length; old++)
-            {
-                if (trackedPlayers[old] != player) continue;
-                for (int f = 0; f < FingertipsPerPlayer; f++)
-                {
-                    engaged[next * FingertipsPerPlayer + f] = fingertipEngaged[old * FingertipsPerPlayer + f];
-                    wasInFront[next * FingertipsPerPlayer + f] = fingertipWasInFront[old * FingertipsPerPlayer + f];
-                }
-                break;
-            }
-            next++;
-        }
-        trackedPlayers = players;
+        for (int i = 0; i < seenGenerations.Length; i++) generations[i] = seenGenerations[i];
         fingertipEngaged = engaged;
         fingertipWasInFront = wasInFront;
+        seenGenerations = generations;
     }
 
     /// <summary>
@@ -254,6 +233,7 @@ public class PushButton : UdonSharpBehaviour
 
     public override void Interact()
     {
+        if (manager == null) return;
         StartClickAnimation(true);
         SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetPlayClickAnimation));
     }
@@ -265,6 +245,7 @@ public class PushButton : UdonSharpBehaviour
     /// </summary>
     public void NetPlayClickAnimation()
     {
+        if (manager == null) return;
         VRCPlayerApi localPlayer = Networking.LocalPlayer;
         if (localPlayer != null && (localPlayer.GetPosition() - transform.position).sqrMagnitude > AnimationRangeSqr) return;
         // Don't turn a local click that is still pressing in into a non-local one, or it would never fire.
@@ -305,6 +286,8 @@ public class PushButton : UdonSharpBehaviour
 
     private void Update()
     {
+        // Without a manager the button is inert: it never moves and never fires.
+        if (manager == null) return;
         UpdateRestWorldPose();
         if (!UpdateRangeGate()) return;
         UpdateFingertipPresses();
@@ -367,10 +350,23 @@ public class PushButton : UdonSharpBehaviour
         VRC_Pickup.PickupHand localHand = VRC_Pickup.PickupHand.None;
         Quaternion toRest = Quaternion.Inverse(restWorldRot);
         Vector3 boxCenter = restWorldPos + restWorldRot * contactCenter;
-        for (int i = 0; i < trackedPlayers.Length; i++)
+        VRCPlayerApi[] players = manager.slotPlayers;
+        int[] generations = manager.slotGenerations;
+        MatchSlotCount(players.Length);
+        for (int i = 0; i < players.Length; i++)
         {
-            VRCPlayerApi player = trackedPlayers[i];
-            bool pressing = Utilities.IsValid(player) && player.IsUserInVR();
+            VRCPlayerApi player = players[i];
+            if (seenGenerations[i] != generations[i])
+            {
+                // The slot has a new player since this button last looked: drop the old player's fingertip state.
+                seenGenerations[i] = generations[i];
+                for (int f = 0; f < FingertipsPerPlayer; f++)
+                {
+                    fingertipEngaged[i * FingertipsPerPlayer + f] = false;
+                    fingertipWasInFront[i * FingertipsPerPlayer + f] = false;
+                }
+            }
+            bool pressing = player != null && Utilities.IsValid(player) && player.IsUserInVR();
             // Hands this far away can't reach the button, so their fingertips are cleared like a non-pressing player's.
             if (pressing && !HandNear(player, HumanBodyBones.LeftHand, boxCenter) && !HandNear(player, HumanBodyBones.RightHand, boxCenter))
             {
@@ -653,13 +649,15 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Editor only, in Play Mode: a wire sphere of the scaled radius at each estimated fingertip of every tracked player.
+    /// Editor only, in Play Mode: a wire sphere of the scaled radius at each estimated fingertip of every player in the
+    /// manager's slots.
     /// </summary>
     private void DrawFingertipGizmos()
     {
         if (!Application.isPlaying) return;
         UdonBehaviour udon = GetComponent<UdonBehaviour>();
-        VRCPlayerApi[] players = udon != null ? udon.GetProgramVariable("trackedPlayers") as VRCPlayerApi[] : null;
+        UdonBehaviour managerUdon = udon != null ? udon.GetProgramVariable("manager") as UdonBehaviour : null;
+        VRCPlayerApi[] players = managerUdon != null ? managerUdon.GetProgramVariable("slotPlayers") as VRCPlayerApi[] : null;
         if (players == null) return;
         Gizmos.color = new Color(0.3f, 1f, 0.3f, 0.9f);
         foreach (VRCPlayerApi player in players)
