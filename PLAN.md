@@ -183,7 +183,7 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   *Check:* the scene is saved with the manager and the wiring. `AddSceneWiringTest` checks it, and a ClientSim desktop click still logs once. The inspector test checks the warning shows for a null and a wrong manager and not for the right one.
 
 - [ ] **8.7 Add the build-time check.**
-  Add `Assets/PushButton/Editor/PushButtonBuildCheck.cs`, implementing the VRChat SDK's `IVRCSDKBuildRequestedCallback` (it runs on Build & Test and Build & Upload). Follow [Build-time check](#build-time-check). Keep the decision logic separate from the dialog so tests can answer for it, and add `Tools/PushButton/Check Manager Wiring` to run it by hand or from automation.
+  Add `Assets/PushButton/Editor/PushButtonBuildCheck.cs`, implementing the VRChat SDK's `IVRCSDKBuildRequestedCallback` (it runs on Build & Test and Build & Upload). Follow [Build-time check](#build-time-check). Keep the decision logic separate from the dialog so tests can answer for it, and add two menu items: `Tools/PushButton/Check Manager Wiring` (the same check, with dialogs) and `Tools/PushButton/Fix Manager Wiring` (adds the manager if needed and wires every button, without asking; choosing the menu item is the consent). Automated runs use the existing trigger's generic `menu` command to call `Fix Manager Wiring` before a build. Nothing in the `vrchat-world-unity-automation` skill or its trigger changes for PushButton.
   *Check:* Edit Mode tests (answering through the test hook, then restoring the scene): no manager + yes adds one and wires every button, including inactive ones; no manager + no changes nothing; a correctly wired scene asks nothing; a null manager, a second manager, and proxy/Udon data that disagree each count as unwired and are fixed on yes and untouched on no; two managers log the warning and use the first in hierarchy order; a scene with no buttons asks nothing. Every case returns true, so the build continues.
 
 ### Phase 9: Verification
@@ -280,7 +280,7 @@ A disabled button holds no state that can go stale, so turning it off and on at 
 - **Several managers:** a warning names the one used (the first in hierarchy order) and the ones ignored. This is logged on every check.
 - **Unwired buttons:** a button is wired only if its `manager` is exactly the first manager, in both the UdonSharp proxy and the UdonBehaviour's data. Null, missing, another manager, or the two disagreeing all count as unwired. If any are unwired, a dialog gives the count and asks to fix them. **Yes** wires them and saves the scene. **No** changes nothing.
 - Fixes go through `SerializedObject` plus `CopyProxyToUdon`, with Undo, and the scene is saved so the build includes them.
-- The dialog is only shown when something is wrong, so an unattended build of a correctly wired scene never stops at a dialog.
+- The dialog is only shown when something is wrong, so an unattended build of a correctly wired scene never stops at a dialog. Before an automated build, run `menu Tools/PushButton/Fix Manager Wiring` so the check finds nothing to ask about.
 
 ### Inspector fields
 
