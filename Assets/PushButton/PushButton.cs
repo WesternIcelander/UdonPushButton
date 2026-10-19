@@ -8,6 +8,8 @@ using VRC.Udon.Common.Interfaces;
 /// Turns any object into a physically pushable button: VR players push it with their fingertips,
 /// desktop and mobile players click it. Only the presser's client runs the configured action.
 /// Has no Update of its own: the scene's <see cref="PushButtonManager"/> ticks it while the local player is in range.
+/// Can be disabled and enabled at any time (its GameObject, a parent, or its UdonBehaviour): a disabled button is at
+/// rest and holds no state that could go stale.
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.NoVariableSync)]
 public class PushButton : UdonSharpBehaviour
@@ -54,14 +56,15 @@ public class PushButton : UdonSharpBehaviour
     [Tooltip("Editor only: acts as a local fingertip for testing without a headset. Ignored in builds.")]
     public Transform debugFingertip;
 
-    // Rest pose relative to the parent, captured once in Start.
+    // Rest pose relative to the parent, captured once on the first enable. The button is always at rest while
+    // disabled, so it's never captured from a pressed position.
     private Vector3 restLocalPosition;
     private Quaternion restLocalRotation;
     // Rest pose in world space, rebuilt every frame so a moving parent carries the button along.
     private Vector3 restWorldPos;
     private Quaternion restWorldRot;
 
-    // Contact box in the button's rest frame (rotation only, in meters), set up once in Start.
+    // Contact box in the button's rest frame (rotation only, in meters), set up once on the first enable.
     // pressAxis is the normalized localPressAxis; lateralAxisU and lateralAxisV complete an orthonormal basis.
     private Vector3 pressAxis;
     private Vector3 lateralAxisU;
@@ -87,7 +90,7 @@ public class PushButton : UdonSharpBehaviour
     private bool armed = true;
     // Meters short of travelDistance at which the local press counts as reaching the bottom.
     private const float FireTolerance = 0.0005f;
-    // Whether the local player is in VR, set once in Start: VR players press with their fingers, everyone else clicks.
+    // Whether the local player is in VR, set once on the first enable: VR players press with their fingers, everyone else clicks.
     private bool localIsVR;
     // The click animation: clickPress runs 0 -> travelDistance over clickPressDuration from clickStartTime, holds the
     // bottom for one frame, then releases and springs back. Only a local click (clickIsLocal) can fire the action.
@@ -108,11 +111,12 @@ public class PushButton : UdonSharpBehaviour
     // bone has to be in, centred on the contact box (its centre in the button's local space, as on the BoxCollider).
     [System.NonSerialized] public Vector3 fingerCheckLocalCenter;
     [System.NonSerialized] public float fingerCheckRangeSqr;
-    // Whether Start has run, whether the button is enabled now, and whether it has registered with the manager since
-    // it was last enabled.
-    private bool started;
+    // Whether the one-time setup has run, and whether the button is enabled now with a manager.
+    private bool initialized;
     private bool enabledNow;
-    private bool registered;
+    // Set by the manager: whether the button is in its list of buttons (or will be once the manager's current tick
+    // ends). Udon drops calls to a manager it hasn't started yet, which leaves this false.
+    [System.NonSerialized] public bool registeredWithManager;
     // Engagement state of the debug fingertip, which isn't a tracked player's slot.
     private bool debugEngaged;
     private bool debugWasInFront;
@@ -127,7 +131,38 @@ public class PushButton : UdonSharpBehaviour
     // Whether the manager last found the local player beyond its AnimationRange (set by _LeaveRange, cleared by _Tick).
     private bool outOfRange;
 
-    private void Start()
+    /// <summary>
+    /// Every enable starts the button at rest, armed and with nothing engaged, at the rest pose taken from the parent
+    /// now, and registers it with the manager. The first enable also does the one-time setup. Udon runs the first
+    /// OnEnable just before Start, so nothing here depends on Start or on the manager having started.
+    /// </summary>
+    private void OnEnable()
+    {
+        if (!initialized) Initialize();
+        if (manager == null) return;
+        enabledNow = true;
+        ResetToRest();
+        TryRegister();
+    }
+
+    /// <summary>
+    /// Unregisters from the manager and snaps to rest with all engagement, click and press state cleared, so a
+    /// finger still inside when the button comes back has to come in from the front again. Also runs on destroy.
+    /// </summary>
+    private void OnDisable()
+    {
+        enabledNow = false;
+        if (!initialized || manager == null) return;
+        if (Utilities.IsValid(manager)) manager.Unregister(this);
+        registeredWithManager = false;
+        ResetToRest();
+    }
+
+    /// <summary>
+    /// The one-time setup on the first enable: rest pose, contact box and input mode. A button with no manager warns
+    /// once and can't be clicked.
+    /// </summary>
+    private void Initialize()
     {
 #if !UNITY_EDITOR
         // UdonSharp drops UNITY_EDITOR when compiling for a build, so uploaded worlds never use the debug fingertip.
@@ -139,36 +174,37 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         ComputeContactBox(true);
         SetUpLocalInput();
-        started = true;
+        initialized = true;
         if (manager == null)
         {
             Debug.LogWarning("[PushButton] " + name + ": no manager is set, so the button does nothing");
             DisableInteractive = true;
-            return;
         }
-        TryRegister();
-    }
-
-    private void OnEnable()
-    {
-        enabledNow = true;
-        // Udon runs OnEnable before Start on the first enable; Start registers then.
-        if (started && manager != null) TryRegister();
     }
 
     /// <summary>
-    /// Registers with the manager. Udon drops calls to a behaviour it hasn't started yet, which happens when this
-    /// button starts first in the scene's first frame, so a dropped call is retried on the next frame.
+    /// Registers with the manager, which sets registeredWithManager. Udon drops calls to a behaviour it hasn't started
+    /// yet, which happens when this button is enabled before the manager's first frame, so a dropped call is retried
+    /// on the next frame.
     /// </summary>
     private void TryRegister()
     {
-        registered = manager.Register(this);
-        if (!registered) SendCustomEventDelayedFrames(nameof(_RetryRegister), 1);
+        manager.Register(this);
+        if (!registeredWithManager) SendCustomEventDelayedFrames(nameof(_RetryRegister), 1);
     }
 
     public void _RetryRegister()
     {
-        if (enabledNow && !registered && manager != null) TryRegister();
+        if (enabledNow && !registeredWithManager && Utilities.IsValid(manager)) TryRegister();
+    }
+
+    /// <summary>
+    /// Whether the button can be pressed now: enabled, registered and its manager running. Clicks and networked
+    /// clicks that arrive otherwise are ignored (Udon delivers events to disabled behaviours too).
+    /// </summary>
+    private bool IsLive()
+    {
+        return enabledNow && registeredWithManager && Utilities.IsValid(manager) && manager.running;
     }
 
     /// <summary>
@@ -214,29 +250,22 @@ public class PushButton : UdonSharpBehaviour
         seenGenerations = generations;
     }
 
-    private void OnDisable()
-    {
-        // The manager stops ticking this button. The rest of the disable rules come with plan step 8.4.
-        enabledNow = false;
-        if (registered && Utilities.IsValid(manager)) manager.Unregister(this);
-        registered = false;
-    }
-
     public override void Interact()
     {
-        if (manager == null) return;
+        if (!IsLive()) return;
         StartClickAnimation(true);
         SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetPlayClickAnimation));
     }
 
     /// <summary>
     /// Network event from another player's click: plays the same click animation, flagged non-local so it never
-    /// fires the action. Ignored when the local player is out of range. Deliberately doesn't check whether the local
+    /// fires the action. Ignored when the local player is out of range, and while the button is disabled or its
+    /// manager isn't running. Deliberately doesn't check whether the local
     /// player is in VR: every viewer sees the click, whatever their platform.
     /// </summary>
     public void NetPlayClickAnimation()
     {
-        if (manager == null) return;
+        if (!IsLive()) return;
         VRCPlayerApi localPlayer = Networking.LocalPlayer;
         if (localPlayer != null && (localPlayer.GetPosition() - transform.position).sqrMagnitude > PushButtonManager.AnimationRangeSqr) return;
         // Don't turn a local click that is still pressing in into a non-local one, or it would never fire.
@@ -287,19 +316,31 @@ public class PushButton : UdonSharpBehaviour
         UpdateFingertipPresses();
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
-        UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
+        bool fired = UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
+        // The action can disable this button or the manager, either of which has already put the button at rest:
+        // stop here so it doesn't move again.
+        if (fired && (!enabledNow || !manager.running)) return;
         UpdatePressAmount();
         ApplyPress(pressAmount);
     }
 
     /// <summary>
-    /// Called by the manager once when the local player goes beyond its AnimationRange: snaps the button to rest and
-    /// clears the engagement and click state, so nothing is left half-pressed and a finger still inside the button
-    /// has to come in from the front again. The manager doesn't tick the button again until the player is back.
+    /// Called by the manager once when the local player goes beyond its AnimationRange, and when the manager is
+    /// disabled: snaps the button to rest (see ResetToRest). The manager doesn't tick the button again until the
+    /// player is back in range (or the manager is enabled again).
     /// </summary>
     public void _LeaveRange()
     {
         outOfRange = true;
+        ResetToRest();
+    }
+
+    /// <summary>
+    /// Snaps the button to its rest pose (rebuilt from the parent now) and clears the engagement, click and press
+    /// state, so nothing is left half-pressed and a finger still inside the button has to come in from the front again.
+    /// </summary>
+    private void ResetToRest()
+    {
         UpdateRestWorldPose();
 
         for (int i = 0; i < fingertipEngaged.Length; i++)
@@ -437,9 +478,9 @@ public class PushButton : UdonSharpBehaviour
     /// <summary>
     /// Fires the action when the local press reaches the bottom while armed, and re-arms once it rises back to
     /// releaseFraction of the travel. Only local presses (fingertips and the local click) come through here, so
-    /// remote presses and networked clicks never fire.
+    /// remote presses and networked clicks never fire. Returns whether it fired.
     /// </summary>
-    private void UpdateTrigger(float localAmount)
+    private bool UpdateTrigger(float localAmount)
     {
         float fireDepth = travelDistance - FireTolerance;
         if (armed)
@@ -447,14 +488,17 @@ public class PushButton : UdonSharpBehaviour
             if (localAmount >= fireDepth)
             {
                 armed = false;
-                FireAction();
+                // Haptics before the action, which can disable the button and so clear localPressHand.
                 if (localPress >= fireDepth) PlayPressHaptics();
+                FireAction();
+                return true;
             }
         }
         else if (localAmount <= travelDistance * releaseFraction && localAmount < fireDepth)
         {
             armed = true;
         }
+        return false;
     }
 
     /// <summary>

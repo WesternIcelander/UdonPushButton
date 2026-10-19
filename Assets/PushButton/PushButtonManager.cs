@@ -51,12 +51,20 @@ public class PushButtonManager : UdonSharpBehaviour
     [System.NonSerialized] public bool[] fingertipValid = new bool[0];
 
     // Registered buttons (the first buttonCount entries), with their transforms and whether the local player was in
-    // range of each on the last frame. A button registers when it starts (and again when re-enabled) and unregisters
-    // when disabled; destroyed ones are dropped as they're found.
+    // range of each on the last frame. A button registers whenever it's enabled and unregisters whenever it's
+    // disabled; destroyed ones are dropped as they're found.
     private PushButton[] buttons = new PushButton[0];
     private Transform[] buttonTransforms = new Transform[0];
     private bool[] buttonInRange = new bool[0];
     private int buttonCount;
+    // Registrations and unregistrations requested while Update runs (an action enabling or disabling buttons), applied
+    // in order once it's done, so its loop never sees the list change: one entry per button, holding its latest request.
+    private PushButton[] pendingButtons = new PushButton[0];
+    private bool[] pendingRegister = new bool[0];
+    private int pendingCount;
+    private bool ticking;
+    // Whether the manager is enabled and ticking its buttons. Buttons ignore clicks while it isn't.
+    [System.NonSerialized] public bool running;
     // How many buttons the last Update ticked (the ones in range).
     [System.NonSerialized] public int tickedButtons;
     // Scratch for PrepareFrame: the buttons that want fingertips this frame, with their hand check spheres and fingers.
@@ -68,6 +76,22 @@ public class PushButtonManager : UdonSharpBehaviour
     private void OnEnable()
     {
         RebuildSlots();
+        running = true;
+    }
+
+    /// <summary>
+    /// Stops ticking and puts every registered button at rest. The buttons stay registered, and once the manager is
+    /// enabled again the range gate brings the ones in range back.
+    /// </summary>
+    private void OnDisable()
+    {
+        running = false;
+        for (int i = 0; i < buttonCount; i++)
+        {
+            buttonInRange[i] = false;
+            PushButton button = buttons[i];
+            if (Utilities.IsValid(button)) button._LeaveRange();
+        }
     }
 
     public override void OnPlayerJoined(VRCPlayerApi player)
@@ -145,15 +169,82 @@ public class PushButtonManager : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Adds the button to the registered buttons and returns true. Does nothing if it is already registered.
-    /// A caller that gets false reached the manager before Udon started it, so the call was dropped.
+    /// Adds the button to the registered buttons and sets its registeredWithManager. Does nothing more if it is
+    /// already registered. While Update runs, the change is deferred until it's done.
     /// </summary>
-    public bool Register(PushButton button)
+    public void Register(PushButton button)
     {
-        if (button == null) return false;
+        if (!Utilities.IsValid(button)) return;
+        button.registeredWithManager = true;
+        if (ticking) Defer(button, true);
+        else AddButton(button);
+    }
+
+    /// <summary>
+    /// Removes the button from the registered buttons, keeping the others in order, and clears its
+    /// registeredWithManager. Does nothing more if it isn't registered. While Update runs, the change is deferred
+    /// until it's done.
+    /// </summary>
+    public void Unregister(PushButton button)
+    {
+        if (button == null) return;
+        if (Utilities.IsValid(button)) button.registeredWithManager = false;
+        if (ticking) Defer(button, false);
+        else RemoveButton(button);
+    }
+
+    /// <summary>
+    /// Records a registration (or unregistration) to apply after the tick, replacing any earlier one for the button.
+    /// </summary>
+    private void Defer(PushButton button, bool register)
+    {
+        for (int i = 0; i < pendingCount; i++)
+        {
+            if (pendingButtons[i] != button) continue;
+            pendingRegister[i] = register;
+            return;
+        }
+        if (pendingCount == pendingButtons.Length)
+        {
+            int size = Mathf.Max(InitialSlotCount, pendingButtons.Length * 2);
+            PushButton[] grown = new PushButton[size];
+            bool[] grownRegister = new bool[size];
+            for (int i = 0; i < pendingCount; i++)
+            {
+                grown[i] = pendingButtons[i];
+                grownRegister[i] = pendingRegister[i];
+            }
+            pendingButtons = grown;
+            pendingRegister = grownRegister;
+        }
+        pendingButtons[pendingCount] = button;
+        pendingRegister[pendingCount] = register;
+        pendingCount++;
+    }
+
+    /// <summary>
+    /// Applies the requests deferred during the tick, in order.
+    /// </summary>
+    private void ApplyPending()
+    {
+        for (int i = 0; i < pendingCount; i++)
+        {
+            PushButton button = pendingButtons[i];
+            if (pendingRegister[i])
+            {
+                if (Utilities.IsValid(button)) AddButton(button);
+            }
+            else RemoveButton(button);
+            pendingButtons[i] = null;
+        }
+        pendingCount = 0;
+    }
+
+    private void AddButton(PushButton button)
+    {
         for (int i = 0; i < buttonCount; i++)
         {
-            if (buttons[i] == button) return true;
+            if (buttons[i] == button) return;
         }
         if (buttonCount == buttons.Length)
         {
@@ -176,13 +267,9 @@ public class PushButtonManager : UdonSharpBehaviour
         // Counted as in range, so a button that starts out of range gets the out-of-range reset once.
         buttonInRange[buttonCount] = true;
         buttonCount++;
-        return true;
     }
 
-    /// <summary>
-    /// Removes the button from the registered buttons, keeping the others in order. Does nothing if it isn't registered.
-    /// </summary>
-    public void Unregister(PushButton button)
+    private void RemoveButton(PushButton button)
     {
         for (int i = 0; i < buttonCount; i++)
         {
@@ -207,23 +294,29 @@ public class PushButtonManager : UdonSharpBehaviour
 
     /// <summary>
     /// Drives every registered button: the range gate for each, this frame's per-slot cache, then a tick for each
-    /// button in range. Buttons out of range cost one distance check each.
+    /// button in range. Buttons out of range cost one distance check each. Registration changes requested meanwhile
+    /// (by buttons' actions) are applied at the end.
     /// </summary>
     private void Update()
     {
+        ticking = true;
         int activeCount = UpdateRangeGates();
         PrepareFrame(activeCount);
         int ticked = 0;
         for (int i = 0; i < buttonCount; i++)
         {
+            // An earlier button's action can disable the manager, which has put every button at rest.
+            if (!running) break;
             if (!buttonInRange[i]) continue;
             PushButton button = buttons[i];
-            // An earlier button's action can destroy this one.
-            if (!Utilities.IsValid(button)) continue;
+            // An earlier button's action can destroy or disable this one (its unregistration waits until the end).
+            if (!Utilities.IsValid(button) || !button.registeredWithManager) continue;
             button._Tick();
             ticked++;
         }
         tickedButtons = ticked;
+        ticking = false;
+        ApplyPending();
     }
 
     /// <summary>
