@@ -4,7 +4,8 @@ using VRC.SDKBase;
 
 /// <summary>
 /// The scene's shared state for every <see cref="PushButton"/>: one per scene, required by each button.
-/// Keeps everyone in the instance in stable player slots, so buttons can keep per-slot state that never shifts.
+/// Keeps everyone in the instance in stable player slots, so buttons can keep per-slot state that never shifts, and
+/// drives every registered button from its own Update: buttons have none.
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.NoVariableSync)]
 public class PushButtonManager : UdonSharpBehaviour
@@ -16,6 +17,12 @@ public class PushButtonManager : UdonSharpBehaviour
     [System.NonSerialized] public int[] slotGenerations = new int[0];
 
     private const int InitialSlotCount = 8;
+
+    // C#'s equivalent of Java's `static final` for a primitive is `const`.
+    // UdonSharp supports `const`; non-const static fields are not supported reliably.
+    // A button is only ticked while the local player is within this distance of it.
+    public const float AnimationRange = 5f;   // meters
+    public const float AnimationRangeSqr = AnimationRange * AnimationRange;
 
     // Fingertip slots per player: left index, right index, left middle, right middle (even slots are left-hand ones).
     public const int FingertipsPerPlayer = 4;
@@ -43,12 +50,15 @@ public class PushButtonManager : UdonSharpBehaviour
     [System.NonSerialized] public Vector3[] fingertipPositions = new Vector3[0];
     [System.NonSerialized] public bool[] fingertipValid = new bool[0];
 
-    // Registered buttons (the first buttonCount entries). A button registers on its first frame and unregisters when
-    // disabled; destroyed ones are dropped as they're found.
+    // Registered buttons (the first buttonCount entries), with their transforms and whether the local player was in
+    // range of each on the last frame. A button registers when it starts (and again when re-enabled) and unregisters
+    // when disabled; destroyed ones are dropped as they're found.
     private PushButton[] buttons = new PushButton[0];
+    private Transform[] buttonTransforms = new Transform[0];
+    private bool[] buttonInRange = new bool[0];
     private int buttonCount;
-    // The Time.frameCount PrepareFrame last ran on, so the cache is built once per frame whichever button asks first.
-    private int preparedFrame = -1;
+    // How many buttons the last Update ticked (the ones in range).
+    [System.NonSerialized] public int tickedButtons;
     // Scratch for PrepareFrame: the buttons that want fingertips this frame, with their hand check spheres and fingers.
     private Vector3[] activeCenters = new Vector3[0];
     private float[] activeRangeSqr = new float[0];
@@ -135,23 +145,38 @@ public class PushButtonManager : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Adds the button to the registered buttons. Does nothing if it is already registered.
+    /// Adds the button to the registered buttons and returns true. Does nothing if it is already registered.
+    /// A caller that gets false reached the manager before Udon started it, so the call was dropped.
     /// </summary>
-    public void Register(PushButton button)
+    public bool Register(PushButton button)
     {
-        if (button == null) return;
+        if (button == null) return false;
         for (int i = 0; i < buttonCount; i++)
         {
-            if (buttons[i] == button) return;
+            if (buttons[i] == button) return true;
         }
         if (buttonCount == buttons.Length)
         {
-            PushButton[] grown = new PushButton[Mathf.Max(InitialSlotCount, buttons.Length * 2)];
-            for (int i = 0; i < buttonCount; i++) grown[i] = buttons[i];
+            int size = Mathf.Max(InitialSlotCount, buttons.Length * 2);
+            PushButton[] grown = new PushButton[size];
+            Transform[] grownTransforms = new Transform[size];
+            bool[] grownInRange = new bool[size];
+            for (int i = 0; i < buttonCount; i++)
+            {
+                grown[i] = buttons[i];
+                grownTransforms[i] = buttonTransforms[i];
+                grownInRange[i] = buttonInRange[i];
+            }
             buttons = grown;
+            buttonTransforms = grownTransforms;
+            buttonInRange = grownInRange;
         }
         buttons[buttonCount] = button;
+        buttonTransforms[buttonCount] = button.transform;
+        // Counted as in range, so a button that starts out of range gets the out-of-range reset once.
+        buttonInRange[buttonCount] = true;
         buttonCount++;
+        return true;
     }
 
     /// <summary>
@@ -169,25 +194,102 @@ public class PushButtonManager : UdonSharpBehaviour
 
     private void RemoveButtonAt(int index)
     {
-        for (int j = index + 1; j < buttonCount; j++) buttons[j - 1] = buttons[j];
+        for (int j = index + 1; j < buttonCount; j++)
+        {
+            buttons[j - 1] = buttons[j];
+            buttonTransforms[j - 1] = buttonTransforms[j];
+            buttonInRange[j - 1] = buttonInRange[j];
+        }
         buttonCount--;
         buttons[buttonCount] = null;
+        buttonTransforms[buttonCount] = null;
     }
 
     /// <summary>
-    /// Builds this frame's per-slot cache. Only the first call in a frame does the work, so every button can call it.
-    /// Hand bones are read for every VR player; finger bones only for players with a hand near an active button, and
-    /// only for the fingers those buttons use. Bone reads therefore scale with players, not players times buttons.
-    /// A button's hand check sphere is the one it published on its own last frame.
+    /// Drives every registered button: the range gate for each, this frame's per-slot cache, then a tick for each
+    /// button in range. Buttons out of range cost one distance check each.
     /// </summary>
-    public void PrepareFrame()
+    private void Update()
     {
-        int frame = Time.frameCount;
-        if (frame == preparedFrame) return;
-        preparedFrame = frame;
-        MatchCacheSize();
+        int activeCount = UpdateRangeGates();
+        PrepareFrame(activeCount);
+        int ticked = 0;
+        for (int i = 0; i < buttonCount; i++)
+        {
+            if (!buttonInRange[i]) continue;
+            PushButton button = buttons[i];
+            // An earlier button's action can destroy this one.
+            if (!Utilities.IsValid(button)) continue;
+            button._Tick();
+            ticked++;
+        }
+        tickedButtons = ticked;
+    }
 
-        int activeCount = CollectActiveButtons();
+    /// <summary>
+    /// The range gate for every registered button, against the local player (a missing local player counts as in
+    /// range). A button leaving range gets its out-of-range reset once. Fills the active* scratch arrays with the
+    /// in-range buttons that use a finger and returns how many there are. Destroyed buttons are dropped.
+    /// The distance is taken from the button's current position: a button out of range is at rest, and one in range
+    /// is at most its travel distance from rest. Its hand check sphere is centred on its contact box at that position
+    /// too, which the sphere's margin (HandEarlyOutDistance) covers.
+    /// </summary>
+    private int UpdateRangeGates()
+    {
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        bool hasLocal = Utilities.IsValid(localPlayer);
+        Vector3 localPosition = hasLocal ? localPlayer.GetPosition() : Vector3.zero;
+        if (activeCenters.Length < buttonCount)
+        {
+            activeCenters = new Vector3[buttons.Length];
+            activeRangeSqr = new float[buttons.Length];
+            activeUseIndex = new bool[buttons.Length];
+            activeUseMiddle = new bool[buttons.Length];
+        }
+        int count = 0;
+        int i = 0;
+        while (i < buttonCount)
+        {
+            PushButton button = buttons[i];
+            if (!Utilities.IsValid(button))
+            {
+                RemoveButtonAt(i);
+                continue;
+            }
+            Transform buttonTransform = buttonTransforms[i];
+            bool inRange = !hasLocal || (buttonTransform.position - localPosition).sqrMagnitude <= AnimationRangeSqr;
+            if (!inRange)
+            {
+                if (buttonInRange[i])
+                {
+                    buttonInRange[i] = false;
+                    button._LeaveRange();
+                }
+                i++;
+                continue;
+            }
+            buttonInRange[i] = true;
+            i++;
+            bool useIndex = button.useIndexFingers;
+            bool useMiddle = button.useMiddleFingers;
+            if (!useIndex && !useMiddle) continue;
+            activeCenters[count] = buttonTransform.TransformPoint(button.fingerCheckLocalCenter);
+            activeRangeSqr[count] = button.fingerCheckRangeSqr;
+            activeUseIndex[count] = useIndex;
+            activeUseMiddle[count] = useMiddle;
+            count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Builds this frame's per-slot cache, before any button ticks. Hand bones are read for every VR player; finger
+    /// bones only for players with a hand near one of the activeCount in-range buttons UpdateRangeGates collected,
+    /// and only for the fingers those buttons use. Bone reads therefore scale with players, not players times buttons.
+    /// </summary>
+    private void PrepareFrame(int activeCount)
+    {
+        MatchCacheSize();
         for (int s = 0; s < slotPlayers.Length; s++)
         {
             VRCPlayerApi player = slotPlayers[s];
@@ -238,43 +340,6 @@ public class PushButtonManager : UdonSharpBehaviour
                 fingertipValid[first + 3] = EstimateFingertip(player, first + 3, HumanBodyBones.RightMiddleDistal, HumanBodyBones.RightMiddleIntermediate, right);
             }
         }
-    }
-
-    /// <summary>
-    /// Fills the active* scratch arrays with the registered buttons that want fingertips this frame (in range, with a
-    /// finger in use) and returns how many there are. Destroyed buttons are dropped from the registration.
-    /// </summary>
-    private int CollectActiveButtons()
-    {
-        if (activeCenters.Length < buttonCount)
-        {
-            activeCenters = new Vector3[buttons.Length];
-            activeRangeSqr = new float[buttons.Length];
-            activeUseIndex = new bool[buttons.Length];
-            activeUseMiddle = new bool[buttons.Length];
-        }
-        int count = 0;
-        int i = 0;
-        while (i < buttonCount)
-        {
-            PushButton button = buttons[i];
-            if (!Utilities.IsValid(button))
-            {
-                RemoveButtonAt(i);
-                continue;
-            }
-            i++;
-            if (!button.fingerCheckActive) continue;
-            bool useIndex = button.useIndexFingers;
-            bool useMiddle = button.useMiddleFingers;
-            if (!useIndex && !useMiddle) continue;
-            activeCenters[count] = button.fingerCheckCenter;
-            activeRangeSqr[count] = button.fingerCheckRangeSqr;
-            activeUseIndex[count] = useIndex;
-            activeUseMiddle[count] = useMiddle;
-            count++;
-        }
-        return count;
     }
 
     /// <summary>

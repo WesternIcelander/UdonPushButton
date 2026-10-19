@@ -180,6 +180,7 @@ public static class PushButtonPlayModeTests
         AddHapticsTest();
         AddHandEarlyOutTest();
         AddBoneReadCountTest();
+        AddManagerTickTest();
         AddNoManagerTest();
         AddInspectorTest();
         AddRegressionPass(" (rotated parent)", true);
@@ -1761,13 +1762,13 @@ public static class PushButtonPlayModeTests
         AddStep(0.5f, () =>
         {
             if (button == null) return;
-            int active = true.Equals(button.GetProgramVariable("fingerCheckActive")) ? 1 : 0;
+            int active = InRange(button) ? 1 : 0;
             foreach (GameObject clone in extraButtons)
             {
-                UdonBehaviour extra = clone.GetComponent<UdonBehaviour>();
-                if (extra != null && true.Equals(extra.GetProgramVariable("fingerCheckActive"))) active++;
+                if (InRange(clone.GetComponent<UdonBehaviour>())) active++;
             }
             Check(name + ": 10 buttons in range", active == extraCount + 1, active + " in range");
+            Check(name + ": 10 buttons ticked", TickedButtons() == extraCount + 1, TickedButtons() + " ticked");
             StartCountingBoneReads();
         });
         AddStep(0.5f, () =>
@@ -1800,6 +1801,132 @@ public static class PushButtonPlayModeTests
             Check(name + " at rest at the end", (float)button.GetProgramVariable("pressAmount") == 0f
                 && (float)button.GetProgramVariable("localPress") == 0f, "pressed");
         });
+    }
+
+    // Plan step 8.3: the manager ticks only the buttons in range. With 9 clones of the scene button beside it (10 in
+    // range) and 40 more on a holder 20 m away, it ticks exactly 10 a frame, the far ones are out of range and at rest,
+    // and pressing one clone with its debug fingertip moves only that clone. Destroyed buttons drop out of the count.
+    static void AddManagerTickTest()
+    {
+        const string name = "manager ticks";
+        const int nearCount = 9;
+        const int farCount = 40;
+        float travel = 0f;
+        GameObject farHolder = null;
+        UdonBehaviour pressed = null;
+        var restPositions = new Dictionary<UdonBehaviour, Vector3>();
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            simulatedVRPlayers.Clear();
+            travel = (float)button.GetProgramVariable("travelDistance");
+            Transform parent = button.transform.parent;
+            Vector3 restLocal = (Vector3)button.GetProgramVariable("restLocalPosition");
+            farHolder = new GameObject("PushButtonTestFarButtons");
+            farHolder.transform.SetPositionAndRotation(parent.position + new Vector3(20f, 0f, 0f), parent.rotation);
+            for (int k = 0; k < nearCount + farCount; k++)
+            {
+                bool near = k < nearCount;
+                GameObject clone = Object.Instantiate(button.gameObject, near ? parent : farHolder.transform);
+                clone.name = (near ? "PushButtonTestNear" : "PushButtonTestFar") + k;
+                // Near: a 5 x 2 grid 6 cm apart, the scene button keeping cell 2. Far: an 8 x 5 grid.
+                int cell = near ? (k < 2 ? k : k + 1) : k - nearCount;
+                int columns = near ? 5 : 8;
+                clone.transform.localPosition = restLocal + new Vector3((cell % columns - 2) * 0.06f, (cell / columns) * 0.06f, 0f);
+                extraButtons.Add(clone);
+                UdonBehaviour extra = clone.GetComponent<UdonBehaviour>();
+                if (extra != null) extra.InitializeUdonContent();
+            }
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            Check(name + ": 10 ticked", TickedButtons() == nearCount + 1, TickedButtons() + " ticked, expected " + (nearCount + 1));
+            int nearInRange = InRange(button) ? 1 : 0;
+            int farOut = 0;
+            int farAtRest = 0;
+            restPositions.Clear();
+            restPositions[button] = button.transform.position;
+            for (int k = 0; k < extraButtons.Count; k++)
+            {
+                UdonBehaviour extra = extraButtons[k].GetComponent<UdonBehaviour>();
+                if (extra == null) continue;
+                restPositions[extra] = extra.transform.position;
+                if (k < nearCount)
+                {
+                    if (InRange(extra)) nearInRange++;
+                    continue;
+                }
+                if (true.Equals(extra.GetProgramVariable("outOfRange"))) farOut++;
+                if ((float)extra.GetProgramVariable("pressAmount") == 0f) farAtRest++;
+            }
+            Check(name + ": 10 in range", nearInRange == nearCount + 1, nearInRange + " in range");
+            Check(name + ": 40 out of range", farOut == farCount, farOut + " out of range");
+            Check(name + ": 40 at rest", farAtRest == farCount, farAtRest + " at rest");
+
+            // Press the near clone in cell 0 with its own debug fingertip, from in front.
+            pressed = extraButtons[0].GetComponent<UdonBehaviour>();
+            UdonBehaviour sceneButton = button;
+            button = pressed;
+            PlaceDebugTip(-0.01f, 0f, 0f);
+            button = sceneButton;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null || pressed == null) return;
+            UdonBehaviour sceneButton = button;
+            button = pressed;
+            PlaceDebugTip(0.03f, 0f, 0f);
+            button = sceneButton;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null || pressed == null) return;
+            float press = (float)pressed.GetProgramVariable("pressAmount");
+            Check(name + ": pressed clone at the bottom", Mathf.Abs(press - travel) < 1e-6f, "press " + press.ToString("F5"));
+            Check(name + ": pressed clone moved", !Near(pressed.transform.position, restPositions[pressed]), "didn't move");
+            int moved = 0;
+            foreach (KeyValuePair<UdonBehaviour, Vector3> entry in restPositions)
+            {
+                if (entry.Key == pressed) continue;
+                if (!Near(entry.Key.transform.position, entry.Value) || (float)entry.Key.GetProgramVariable("pressAmount") != 0f) moved++;
+            }
+            Check(name + ": no other button moved", moved == 0, moved + " others moved");
+            Check(name + ": still 10 ticked while pressing", TickedButtons() == nearCount + 1, TickedButtons() + " ticked");
+
+            // Tear down: the clones (and so the pressed one's debug fingertip) and the far holder.
+            UdonBehaviour sceneButton = button;
+            button = pressed;
+            RemoveDebugTip();
+            button = sceneButton;
+            foreach (GameObject clone in extraButtons) Object.Destroy(clone);
+            extraButtons.Clear();
+            if (farHolder != null) Object.Destroy(farHolder);
+            restPositions.Clear();
+            pressed = null;
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            Check(name + ": only the scene button ticks at the end", TickedButtons() == 1, TickedButtons() + " ticked");
+            Check(name + ": scene button at rest at the end", (float)button.GetProgramVariable("pressAmount") == 0f, "pressed");
+        });
+    }
+
+    // Whether the manager hasn't put the button out of range (outOfRange is false).
+    static bool InRange(UdonBehaviour pushButton)
+    {
+        return pushButton != null && false.Equals(pushButton.GetProgramVariable("outOfRange"));
+    }
+
+    // How many buttons the scene button's manager ticked on its last Update.
+    static int TickedButtons()
+    {
+        UdonBehaviour manager = ManagerOf(button);
+        return manager != null ? (int)manager.GetProgramVariable("tickedButtons") : -1;
     }
 
     // Replaces ClientSim's GetBonePosition with one that counts calls per frame (or restarts the count), from the next

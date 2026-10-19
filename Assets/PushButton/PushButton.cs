@@ -7,15 +7,11 @@ using VRC.Udon.Common.Interfaces;
 /// <summary>
 /// Turns any object into a physically pushable button: VR players push it with their fingertips,
 /// desktop and mobile players click it. Only the presser's client runs the configured action.
+/// Has no Update of its own: the scene's <see cref="PushButtonManager"/> ticks it while the local player is in range.
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.NoVariableSync)]
 public class PushButton : UdonSharpBehaviour
 {
-    // C#'s equivalent of Java's `static final` for a primitive is `const`.
-    // UdonSharp supports `const`; non-const static fields are not supported reliably.
-    private const float AnimationRange = 5f;   // meters
-    private const float AnimationRangeSqr = AnimationRange * AnimationRange;
-
     [Header("Setup")]
     [Tooltip("Required. The scene's PushButtonManager. Without one the button does nothing.")]
     public PushButtonManager manager;
@@ -108,12 +104,14 @@ public class PushButton : UdonSharpBehaviour
     private bool[] fingertipWasInFront = new bool[0];
     private int[] seenGenerations = new int[0];
 
-    // What the manager reads to decide whose finger bones to read: whether this button wants fingertips this frame
-    // (registered and in range), and the sphere a hand bone has to be in for that, centred on the contact box.
-    [System.NonSerialized] public bool fingerCheckActive;
-    [System.NonSerialized] public Vector3 fingerCheckCenter;
+    // What the manager reads to decide whose finger bones to read while this button is in range: the sphere a hand
+    // bone has to be in, centred on the contact box (its centre in the button's local space, as on the BoxCollider).
+    [System.NonSerialized] public Vector3 fingerCheckLocalCenter;
     [System.NonSerialized] public float fingerCheckRangeSqr;
-    // Whether this button has registered with the manager since it was last enabled.
+    // Whether Start has run, whether the button is enabled now, and whether it has registered with the manager since
+    // it was last enabled.
+    private bool started;
+    private bool enabledNow;
     private bool registered;
     // Engagement state of the debug fingertip, which isn't a tracked player's slot.
     private bool debugEngaged;
@@ -126,7 +124,7 @@ public class PushButton : UdonSharpBehaviour
     // The haptic pulse played in that hand when its press fires the action, at hapticStrength.
     private const float HapticDuration = 0.08f;   // seconds
     private const float HapticFrequency = 320f;   // Hz
-    // Whether the local player was beyond AnimationRange on the last frame, so the reset to rest runs only once.
+    // Whether the manager last found the local player beyond its AnimationRange (set by _LeaveRange, cleared by _Tick).
     private bool outOfRange;
 
     private void Start()
@@ -141,11 +139,36 @@ public class PushButton : UdonSharpBehaviour
         UpdateRestWorldPose();
         ComputeContactBox(true);
         SetUpLocalInput();
+        started = true;
         if (manager == null)
         {
             Debug.LogWarning("[PushButton] " + name + ": no manager is set, so the button does nothing");
             DisableInteractive = true;
+            return;
         }
+        TryRegister();
+    }
+
+    private void OnEnable()
+    {
+        enabledNow = true;
+        // Udon runs OnEnable before Start on the first enable; Start registers then.
+        if (started && manager != null) TryRegister();
+    }
+
+    /// <summary>
+    /// Registers with the manager. Udon drops calls to a behaviour it hasn't started yet, which happens when this
+    /// button starts first in the scene's first frame, so a dropped call is retried on the next frame.
+    /// </summary>
+    private void TryRegister()
+    {
+        registered = manager.Register(this);
+        if (!registered) SendCustomEventDelayedFrames(nameof(_RetryRegister), 1);
+    }
+
+    public void _RetryRegister()
+    {
+        if (enabledNow && !registered && manager != null) TryRegister();
     }
 
     /// <summary>
@@ -193,8 +216,8 @@ public class PushButton : UdonSharpBehaviour
 
     private void OnDisable()
     {
-        // The manager stops reading this button's fingers. The rest of the disable rules come with plan step 8.4.
-        fingerCheckActive = false;
+        // The manager stops ticking this button. The rest of the disable rules come with plan step 8.4.
+        enabledNow = false;
         if (registered && Utilities.IsValid(manager)) manager.Unregister(this);
         registered = false;
     }
@@ -215,7 +238,7 @@ public class PushButton : UdonSharpBehaviour
     {
         if (manager == null) return;
         VRCPlayerApi localPlayer = Networking.LocalPlayer;
-        if (localPlayer != null && (localPlayer.GetPosition() - transform.position).sqrMagnitude > AnimationRangeSqr) return;
+        if (localPlayer != null && (localPlayer.GetPosition() - transform.position).sqrMagnitude > PushButtonManager.AnimationRangeSqr) return;
         // Don't turn a local click that is still pressing in into a non-local one, or it would never fire.
         if (clickActive && clickIsLocal) return;
         StartClickAnimation(false);
@@ -252,20 +275,15 @@ public class PushButton : UdonSharpBehaviour
         clickPress = travelDistance * Mathf.Max(progress, 0f);
     }
 
-    private void Update()
+    /// <summary>
+    /// One frame of the button, called by the manager while the local player is in range, after it has built this
+    /// frame's fingertip cache: rest pose, fingertip presses, click, trigger, press amount, then the new position.
+    /// A button without a manager is never registered, so it never ticks: it never moves and never fires.
+    /// </summary>
+    public void _Tick()
     {
-        // Without a manager the button is inert: it never moves and never fires.
-        if (manager == null) return;
-        if (!registered)
-        {
-            manager.Register(this);
-            registered = true;
-        }
+        outOfRange = false;
         UpdateRestWorldPose();
-        if (!UpdateRangeGate()) return;
-        fingerCheckCenter = restWorldPos + restWorldRot * contactCenter;
-        fingerCheckActive = true;
-        manager.PrepareFrame();
         UpdateFingertipPresses();
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
@@ -275,23 +293,14 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Returns false while the local player is farther than AnimationRange from the button, so Update skips the frame.
-    /// On the first out-of-range frame it snaps the button to rest and clears the engagement and click state, so
-    /// nothing is left half-pressed and a finger still inside the button has to come in from the front again.
-    /// A missing local player counts as in range.
+    /// Called by the manager once when the local player goes beyond its AnimationRange: snaps the button to rest and
+    /// clears the engagement and click state, so nothing is left half-pressed and a finger still inside the button
+    /// has to come in from the front again. The manager doesn't tick the button again until the player is back.
     /// </summary>
-    private bool UpdateRangeGate()
+    public void _LeaveRange()
     {
-        VRCPlayerApi localPlayer = Networking.LocalPlayer;
-        bool inRange = localPlayer == null || (localPlayer.GetPosition() - restWorldPos).sqrMagnitude <= AnimationRangeSqr;
-        if (inRange)
-        {
-            outOfRange = false;
-            return true;
-        }
-        if (outOfRange) return false;
         outOfRange = true;
-        fingerCheckActive = false;
+        UpdateRestWorldPose();
 
         for (int i = 0; i < fingertipEngaged.Length; i++)
         {
@@ -310,7 +319,6 @@ public class PushButton : UdonSharpBehaviour
         armed = true;
         pressAmount = 0f;
         ApplyPress(0f);
-        return false;
     }
 
     /// <summary>
@@ -550,6 +558,7 @@ public class PushButton : UdonSharpBehaviour
 
         contactCenter = centerMeters;
         contactHalfExtents = halfMeters;
+        fingerCheckLocalCenter = center;
         frontFaceOffset = BoxSupport(halfMeters, pressAxis) - Vector3.Dot(centerMeters, pressAxis);
         footprintCenterU = Vector3.Dot(centerMeters, lateralAxisU);
         footprintCenterV = Vector3.Dot(centerMeters, lateralAxisV);
