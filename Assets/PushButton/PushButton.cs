@@ -99,8 +99,8 @@ public class PushButton : UdonSharpBehaviour
     private bool clickIsLocal;
     private float clickStartTime;
 
-    // Fingertip slots per player: left index, right index, left middle, right middle.
-    private const int FingertipsPerPlayer = 4;
+    // Fingertip slots per player, in the manager's order: left index, right index, left middle, right middle.
+    private const int FingertipsPerPlayer = PushButtonManager.FingertipsPerPlayer;
     // Per-fingertip state for each of the manager's player slots: fingertip f of slot i is at index
     // i * FingertipsPerPlayer + f. seenGenerations[i] is the slot's generation the state belongs to; when the manager
     // gives the slot a new player, the state is cleared so the new player never inherits a press.
@@ -108,15 +108,13 @@ public class PushButton : UdonSharpBehaviour
     private bool[] fingertipWasInFront = new bool[0];
     private int[] seenGenerations = new int[0];
 
-    // The fingertip lies this fraction of the last finger segment (intermediate -> distal) beyond the distal bone.
-    private const float FingertipExtrapolation = 0.8f;
-    // Avatar eye height in meters at which fingertipRadius applies unscaled; other avatars scale it in proportion.
-    private const float ReferenceEyeHeight = 1.6f;
-    // Filled by GetFingertips for one player, in the same slot order as the state arrays: world positions, which
-    // slots hold a usable tip (an enabled finger on an avatar with the bones), and the radius scaled to the avatar.
-    private Vector3[] fingertipPositions = new Vector3[FingertipsPerPlayer];
-    private bool[] fingertipValid = new bool[FingertipsPerPlayer];
-    private float fingertipScaledRadius;
+    // What the manager reads to decide whose finger bones to read: whether this button wants fingertips this frame
+    // (registered and in range), and the sphere a hand bone has to be in for that, centred on the contact box.
+    [System.NonSerialized] public bool fingerCheckActive;
+    [System.NonSerialized] public Vector3 fingerCheckCenter;
+    [System.NonSerialized] public float fingerCheckRangeSqr;
+    // Whether this button has registered with the manager since it was last enabled.
+    private bool registered;
     // Engagement state of the debug fingertip, which isn't a tracked player's slot.
     private bool debugEngaged;
     private bool debugWasInFront;
@@ -130,10 +128,6 @@ public class PushButton : UdonSharpBehaviour
     private const float HapticFrequency = 320f;   // Hz
     // Whether the local player was beyond AnimationRange on the last frame, so the reset to rest runs only once.
     private bool outOfRange;
-    // A player's fingertip work is skipped while both their hand bones are farther than this from the contact box.
-    private const float HandEarlyOutDistance = 0.5f;   // meters
-    // HandEarlyOutDistance plus the contact box's bounding radius, squared, measured from the box centre.
-    private float handEarlyOutRangeSqr;
 
     private void Start()
     {
@@ -197,38 +191,12 @@ public class PushButton : UdonSharpBehaviour
         seenGenerations = generations;
     }
 
-    /// <summary>
-    /// Estimates the player's enabled fingertips into fingertipPositions and fingertipValid (slots: left index, right
-    /// index, left middle, right middle), and sets fingertipScaledRadius from their avatar's eye height.
-    /// </summary>
-    private void GetFingertips(VRCPlayerApi player)
+    private void OnDisable()
     {
-        fingertipValid[0] = useIndexFingers && EstimateFingertip(player, 0, HumanBodyBones.LeftIndexDistal, HumanBodyBones.LeftIndexIntermediate, HumanBodyBones.LeftHand);
-        fingertipValid[1] = useIndexFingers && EstimateFingertip(player, 1, HumanBodyBones.RightIndexDistal, HumanBodyBones.RightIndexIntermediate, HumanBodyBones.RightHand);
-        fingertipValid[2] = useMiddleFingers && EstimateFingertip(player, 2, HumanBodyBones.LeftMiddleDistal, HumanBodyBones.LeftMiddleIntermediate, HumanBodyBones.LeftHand);
-        fingertipValid[3] = useMiddleFingers && EstimateFingertip(player, 3, HumanBodyBones.RightMiddleDistal, HumanBodyBones.RightMiddleIntermediate, HumanBodyBones.RightHand);
-
-        float eyeHeight = player.GetAvatarEyeHeightAsMeters();
-        fingertipScaledRadius = eyeHeight > 0f ? fingertipRadius * eyeHeight / ReferenceEyeHeight : fingertipRadius;
-    }
-
-    /// <summary>
-    /// Puts one fingertip estimate in fingertipPositions[slot]: the distal bone extended along the last finger segment,
-    /// or the hand bone if the avatar lacks those finger bones. Returns false if it lacks the hand bone too.
-    /// GetBonePosition returns zero for a missing bone.
-    /// </summary>
-    private bool EstimateFingertip(VRCPlayerApi player, int slot, HumanBodyBones distalBone, HumanBodyBones intermediateBone, HumanBodyBones handBone)
-    {
-        Vector3 distal = player.GetBonePosition(distalBone);
-        Vector3 intermediate = player.GetBonePosition(intermediateBone);
-        if (distal != Vector3.zero && intermediate != Vector3.zero)
-        {
-            fingertipPositions[slot] = distal + (distal - intermediate) * FingertipExtrapolation;
-            return true;
-        }
-        Vector3 hand = player.GetBonePosition(handBone);
-        fingertipPositions[slot] = hand;
-        return hand != Vector3.zero;
+        // The manager stops reading this button's fingers. The rest of the disable rules come with plan step 8.4.
+        fingerCheckActive = false;
+        if (registered && Utilities.IsValid(manager)) manager.Unregister(this);
+        registered = false;
     }
 
     public override void Interact()
@@ -288,8 +256,16 @@ public class PushButton : UdonSharpBehaviour
     {
         // Without a manager the button is inert: it never moves and never fires.
         if (manager == null) return;
+        if (!registered)
+        {
+            manager.Register(this);
+            registered = true;
+        }
         UpdateRestWorldPose();
         if (!UpdateRangeGate()) return;
+        fingerCheckCenter = restWorldPos + restWorldRot * contactCenter;
+        fingerCheckActive = true;
+        manager.PrepareFrame();
         UpdateFingertipPresses();
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
@@ -315,6 +291,7 @@ public class PushButton : UdonSharpBehaviour
         }
         if (outOfRange) return false;
         outOfRange = true;
+        fingerCheckActive = false;
 
         for (int i = 0; i < fingertipEngaged.Length; i++)
         {
@@ -338,10 +315,12 @@ public class PushButton : UdonSharpBehaviour
 
     /// <summary>
     /// Sets localPress from the local player's fingertips (and the debug fingertip) and remotePress from everyone
-    /// else's: the deepest press of any engaged fingertip. Only players in VR press with their fingers, judged by
-    /// each player's own IsUserInVR, so a remote VR player moves the button on every client, VR and desktop alike.
-    /// Desktop and mobile players click instead, and their avatars' animated hands never press. The debug fingertip
-    /// counts as the local player's whatever their platform. localPressHand records the hand of the deepest local press.
+    /// else's: the deepest press of any engaged fingertip. The fingertips come from the manager's per-frame cache,
+    /// which only fills them in for players in VR (judged by each player's own IsUserInVR, so a remote VR player moves
+    /// the button on every client, VR and desktop alike) with a hand near an active button. Desktop and mobile players
+    /// click instead, and their avatars' animated hands never press. Each fingertip's radius is fingertipRadius scaled
+    /// to the avatar. The debug fingertip counts as the local player's whatever their platform. localPressHand records
+    /// the hand of the deepest local press.
     /// </summary>
     private void UpdateFingertipPresses()
     {
@@ -349,13 +328,19 @@ public class PushButton : UdonSharpBehaviour
         float remote = 0f;
         VRC_Pickup.PickupHand localHand = VRC_Pickup.PickupHand.None;
         Quaternion toRest = Quaternion.Inverse(restWorldRot);
-        Vector3 boxCenter = restWorldPos + restWorldRot * contactCenter;
+        // Each of the manager's arrays is read once per frame, not per element.
         VRCPlayerApi[] players = manager.slotPlayers;
         int[] generations = manager.slotGenerations;
+        bool[] near = manager.slotNear;
+        bool[] isLocal = manager.slotIsLocal;
+        float[] scales = manager.slotScale;
+        Vector3[] tips = manager.fingertipPositions;
+        bool[] tipValid = manager.fingertipValid;
         MatchSlotCount(players.Length);
+        // The cache is sized to the slots when it's built; a slot added since then has no cache entry yet.
+        int cached = Mathf.Min(players.Length, near.Length);
         for (int i = 0; i < players.Length; i++)
         {
-            VRCPlayerApi player = players[i];
             if (seenGenerations[i] != generations[i])
             {
                 // The slot has a new player since this button last looked: drop the old player's fingertip state.
@@ -366,17 +351,15 @@ public class PushButton : UdonSharpBehaviour
                     fingertipWasInFront[i * FingertipsPerPlayer + f] = false;
                 }
             }
-            bool pressing = player != null && Utilities.IsValid(player) && player.IsUserInVR();
-            // Hands this far away can't reach the button, so their fingertips are cleared like a non-pressing player's.
-            if (pressing && !HandNear(player, HumanBodyBones.LeftHand, boxCenter) && !HandNear(player, HumanBodyBones.RightHand, boxCenter))
-            {
-                pressing = false;
-            }
-            if (pressing) GetFingertips(player);
+            // Not near: not a VR player, or both hands too far from every active button to reach one. Its fingertips
+            // are cleared like a non-pressing player's.
+            bool pressing = i < cached && near[i];
+            float radius = pressing ? fingertipRadius * scales[i] : 0f;
             for (int f = 0; f < FingertipsPerPlayer; f++)
             {
                 int slot = i * FingertipsPerPlayer + f;
-                if (!pressing || !fingertipValid[f])
+                bool used = f < 2 ? useIndexFingers : useMiddleFingers;
+                if (!pressing || !used || !tipValid[slot])
                 {
                     fingertipEngaged[slot] = false;
                     fingertipWasInFront[slot] = false;
@@ -384,10 +367,10 @@ public class PushButton : UdonSharpBehaviour
                 }
                 tipEngaged = fingertipEngaged[slot];
                 tipWasInFront = fingertipWasInFront[slot];
-                float press = EvaluateFingertip(toRest, fingertipPositions[f], fingertipScaledRadius);
+                float press = EvaluateFingertip(toRest, tips[slot], radius);
                 fingertipEngaged[slot] = tipEngaged;
                 fingertipWasInFront[slot] = tipWasInFront;
-                if (player.isLocal)
+                if (isLocal[i])
                 {
                     if (press > local)
                     {
@@ -422,16 +405,6 @@ public class PushButton : UdonSharpBehaviour
         localPress = local;
         remotePress = remote;
         localPressHand = localHand;
-    }
-
-    /// <summary>
-    /// Whether the player's hand bone is within HandEarlyOutDistance of the contact box (measured from its centre,
-    /// allowing for its bounding radius). A missing hand bone counts as near, so the fingertip estimate decides.
-    /// </summary>
-    private bool HandNear(VRCPlayerApi player, HumanBodyBones handBone, Vector3 boxCenter)
-    {
-        Vector3 hand = player.GetBonePosition(handBone);
-        return hand == Vector3.zero || (hand - boxCenter).sqrMagnitude <= handEarlyOutRangeSqr;
     }
 
     /// <summary>
@@ -582,8 +555,8 @@ public class PushButton : UdonSharpBehaviour
         footprintCenterV = Vector3.Dot(centerMeters, lateralAxisV);
         footprintHalfU = BoxSupport(halfMeters, lateralAxisU);
         footprintHalfV = BoxSupport(halfMeters, lateralAxisV);
-        float handRange = HandEarlyOutDistance + halfMeters.magnitude;
-        handEarlyOutRangeSqr = handRange * handRange;
+        float handRange = PushButtonManager.HandEarlyOutDistance + halfMeters.magnitude;
+        fingerCheckRangeSqr = handRange * handRange;
     }
 
     /// <summary>
@@ -649,25 +622,25 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Editor only, in Play Mode: a wire sphere of the scaled radius at each estimated fingertip of every player in the
-    /// manager's slots.
+    /// Editor only, in Play Mode: a wire sphere of the scaled radius at each fingertip in the manager's per-frame cache
+    /// that this button uses (only VR players with a hand near an active button have any).
     /// </summary>
     private void DrawFingertipGizmos()
     {
         if (!Application.isPlaying) return;
         UdonBehaviour udon = GetComponent<UdonBehaviour>();
         UdonBehaviour managerUdon = udon != null ? udon.GetProgramVariable("manager") as UdonBehaviour : null;
-        VRCPlayerApi[] players = managerUdon != null ? managerUdon.GetProgramVariable("slotPlayers") as VRCPlayerApi[] : null;
-        if (players == null) return;
+        if (managerUdon == null) return;
+        Vector3[] tips = managerUdon.GetProgramVariable("fingertipPositions") as Vector3[];
+        bool[] valid = managerUdon.GetProgramVariable("fingertipValid") as bool[];
+        float[] scales = managerUdon.GetProgramVariable("slotScale") as float[];
+        if (tips == null || valid == null || scales == null) return;
         Gizmos.color = new Color(0.3f, 1f, 0.3f, 0.9f);
-        foreach (VRCPlayerApi player in players)
+        for (int t = 0; t < valid.Length && t < tips.Length; t++)
         {
-            if (!Utilities.IsValid(player)) continue;
-            GetFingertips(player);
-            for (int f = 0; f < FingertipsPerPlayer; f++)
-            {
-                if (fingertipValid[f]) Gizmos.DrawWireSphere(fingertipPositions[f], fingertipScaledRadius);
-            }
+            int s = t / FingertipsPerPlayer;
+            bool used = t % FingertipsPerPlayer < 2 ? useIndexFingers : useMiddleFingers;
+            if (valid[t] && used && s < scales.Length) Gizmos.DrawWireSphere(tips[t], fingertipRadius * scales[s]);
         }
     }
 

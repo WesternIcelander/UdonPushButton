@@ -64,6 +64,11 @@ public static class PushButtonPlayModeTests
     static VRC_Pickup.PickupHand lastHapticHand;
     static float lastHapticAmplitude;
     static float savedHapticStrength;
+    // GetBonePosition calls per Time.frameCount, while the counting hook is installed.
+    static readonly Dictionary<int, int> boneReadsPerFrame = new Dictionary<int, int>();
+    static bool boneReadsCounted;
+    static int boneCountFrom;
+    static readonly List<GameObject> extraButtons = new List<GameObject>();
 
     static PushButtonPlayModeTests()
     {
@@ -144,6 +149,7 @@ public static class PushButtonPlayModeTests
             Application.logMessageReceived -= CountNoManagerWarnings;
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
+            StopCountingBoneReads();
         }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
         SessionState.EraseBool(ArmedKey);
@@ -173,6 +179,7 @@ public static class PushButtonPlayModeTests
         AddVRFilterTest();
         AddHapticsTest();
         AddHandEarlyOutTest();
+        AddBoneReadCountTest();
         AddNoManagerTest();
         AddInspectorTest();
         AddRegressionPass(" (rotated parent)", true);
@@ -299,10 +306,9 @@ public static class PushButtonPlayModeTests
         });
     }
 
-    // Plan step 5.2: the local player's fingertip estimates (left in Udon's buffers by the per-player loop in Update, as
-    // the local player is the only one in the instance at this point) match the
-    // ClientSim avatar's finger bones, honour the finger toggles, carry the eye-height-scaled radius, and follow the
-    // avatar when the player teleports 1 m sideways.
+    // Plan step 5.2: the local player's fingertip estimates (in the manager's per-frame cache since plan step 8.2) match
+    // the ClientSim avatar's finger bones, honour the finger toggles (the manager only estimates fingers a near button
+    // uses), carry the eye-height-scaled radius, and follow the avatar when the player teleports 1 m sideways.
     static void AddFingertipTest()
     {
         const string name = "fingertips";
@@ -328,7 +334,10 @@ public static class PushButtonPlayModeTests
             CheckFingertips(name + " defaults", true, false);
 
             float eyeHeight = Networking.LocalPlayer.GetAvatarEyeHeightAsMeters();
-            float radius = (float)button.GetProgramVariable("fingertipScaledRadius");
+            int localSlot = SlotOf(Networking.LocalPlayer, 0);
+            localSlot = localSlot >= 0 ? localSlot / 4 : -1;
+            float[] scales = (float[])ManagerOf(button).GetProgramVariable("slotScale");
+            float radius = localSlot >= 0 && localSlot < scales.Length ? (float)button.GetProgramVariable("fingertipRadius") * scales[localSlot] : -1f;
             float expectedRadius = (float)button.GetProgramVariable("fingertipRadius") * eyeHeight / 1.6f;
             Debug.Log("[PushButtonTest] " + name + ": eye height " + eyeHeight.ToString("F3") + " m, scaled radius " + radius.ToString("F5"));
             Check(name + " radius scaled by eye height", Mathf.Abs(radius - expectedRadius) < 1e-6f,
@@ -347,7 +356,7 @@ public static class PushButtonPlayModeTests
             VRCPlayerApi localPlayer = Networking.LocalPlayer;
             savedPlayerPos = localPlayer.GetPosition();
             savedPlayerRot = localPlayer.GetRotation();
-            tipsBeforeTeleport = (Vector3[])((Vector3[])button.GetProgramVariable("fingertipPositions")).Clone();
+            tipsBeforeTeleport = LocalCachedTips();
             localPlayer.TeleportTo(savedPlayerPos + teleportOffset, savedPlayerRot);
             button.transform.parent.position += teleportOffset;
         });
@@ -355,7 +364,7 @@ public static class PushButtonPlayModeTests
         {
             if (button == null) return;
             CheckFingertips(name + " after teleport", true, false);
-            Vector3[] tips = (Vector3[])button.GetProgramVariable("fingertipPositions");
+            Vector3[] tips = LocalCachedTips();
             for (int f = 0; f < 2; f++)
             {
                 Vector3 moved = tips[f] - tipsBeforeTeleport[f];
@@ -381,8 +390,10 @@ public static class PushButtonPlayModeTests
         HumanBodyBones[] intermediate = { HumanBodyBones.LeftIndexIntermediate, HumanBodyBones.RightIndexIntermediate, HumanBodyBones.LeftMiddleIntermediate, HumanBodyBones.RightMiddleIntermediate };
         HumanBodyBones[] hand = { HumanBodyBones.LeftHand, HumanBodyBones.RightHand, HumanBodyBones.LeftHand, HumanBodyBones.RightHand };
         VRCPlayerApi player = Networking.LocalPlayer;
-        Vector3[] tips = (Vector3[])button.GetProgramVariable("fingertipPositions");
-        bool[] valid = (bool[])button.GetProgramVariable("fingertipValid");
+        Vector3[] tips = LocalCachedTips();
+        bool[] valid = new bool[4];
+        int first = SlotOf(player, 0);
+        if (first >= 0) System.Array.Copy((bool[])ManagerOf(button).GetProgramVariable("fingertipValid"), first, valid, 0, 4);
         for (int f = 0; f < 4; f++)
         {
             bool enabled = f < 2 ? index : middle;
@@ -398,6 +409,15 @@ public static class PushButtonPlayModeTests
             Check(name + " slot " + f + " position", error < 0.005f, "off by " + error.ToString("F4") + " m");
             if (hasFinger) Check(name + " slot " + f + " beyond the distal bone", Vector3.Dot(tips[f] - d, d - i) > 0f, "not past the distal bone");
         }
+    }
+
+    // The local player's four fingertips in the manager's per-frame cache (all zero if the player has no slot).
+    static Vector3[] LocalCachedTips()
+    {
+        Vector3[] tips = new Vector3[4];
+        int first = SlotOf(Networking.LocalPlayer, 0);
+        if (first >= 0) System.Array.Copy((Vector3[])ManagerOf(button).GetProgramVariable("fingertipPositions"), first, tips, 0, 4);
+        return tips;
     }
 
     // Plan step 7.1: PushButton's inspector is PushButtonEditor, and its event dropdown lists an UdonSharp target's
@@ -1693,6 +1713,145 @@ public static class PushButtonPlayModeTests
             Check(name + " released at the end", (float)button.GetProgramVariable("remotePress") == 0f
                 && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
         });
+    }
+
+    // Plan step 8.2: the manager reads each player's bones once per frame, however many buttons are near. With the
+    // local player in VR and the scene button 2 cm in front of their left index, it counts GetBonePosition calls per
+    // frame, then adds 9 more buttons beside it (all in range and near the hands) and counts again: the counts are
+    // equal, both hands plus two bones per index finger. With every button 1 m above the hands only the hands are read.
+    static void AddBoneReadCountTest()
+    {
+        const string name = "bone reads";
+        const int extraCount = 9;
+        int oneButtonReads = -1;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            savedParentPos = button.transform.parent.position;
+            SimulateVR(Networking.LocalPlayer, true);
+            if (!Check(name + ": local avatar has index bones", MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.02f), "no finger bones")) button = null;
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            StartCountingBoneReads();
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            oneButtonReads = BoneReadsPerFrame(name + " 1 button");
+            Check(name + " 1 button: hands and index fingers", oneButtonReads == 6, oneButtonReads + " reads per frame, expected 6");
+            Vector3 restLocal = (Vector3)button.GetProgramVariable("restLocalPosition");
+            for (int k = 0; k < extraCount; k++)
+            {
+                GameObject clone = Object.Instantiate(button.gameObject, button.transform.parent);
+                clone.name = "PushButtonTestExtra" + k;
+                // A 5 x 2 grid 6 cm apart on the plate's plane; the scene button keeps cell 2, at its own rest pose.
+                int cell = k < 2 ? k : k + 1;
+                clone.transform.localPosition = restLocal + new Vector3((cell % 5 - 2) * 0.06f, (cell / 5) * 0.06f, 0f);
+                extraButtons.Add(clone);
+                // Instantiated UdonBehaviours aren't set up by ClientSim (VRChat's own instantiate does that).
+                UdonBehaviour extra = clone.GetComponent<UdonBehaviour>();
+                if (extra != null) extra.InitializeUdonContent();
+            }
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            int active = true.Equals(button.GetProgramVariable("fingerCheckActive")) ? 1 : 0;
+            foreach (GameObject clone in extraButtons)
+            {
+                UdonBehaviour extra = clone.GetComponent<UdonBehaviour>();
+                if (extra != null && true.Equals(extra.GetProgramVariable("fingerCheckActive"))) active++;
+            }
+            Check(name + ": 10 buttons in range", active == extraCount + 1, active + " in range");
+            StartCountingBoneReads();
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            int tenButtonReads = BoneReadsPerFrame(name + " 10 buttons");
+            Check(name + " 10 buttons read as much as 1", tenButtonReads == oneButtonReads && oneButtonReads > 0,
+                tenButtonReads + " reads per frame, 1 button " + oneButtonReads);
+            button.transform.parent.position += new Vector3(0f, 1f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            StartCountingBoneReads();
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            int farReads = BoneReadsPerFrame(name + " hands far");
+            Check(name + " hands far: hands only", farReads == 2, farReads + " reads per frame, expected 2");
+            StopCountingBoneReads();
+            foreach (GameObject clone in extraButtons) Object.Destroy(clone);
+            extraButtons.Clear();
+            button.transform.parent.position = savedParentPos;
+            simulatedVRPlayers.Clear();
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            Check(name + " at rest at the end", (float)button.GetProgramVariable("pressAmount") == 0f
+                && (float)button.GetProgramVariable("localPress") == 0f, "pressed");
+        });
+    }
+
+    // Replaces ClientSim's GetBonePosition with one that counts calls per frame (or restarts the count), from the next
+    // frame on.
+    static void StartCountingBoneReads()
+    {
+        if (!boneReadsCounted)
+        {
+            VRCPlayerApi._GetBonePosition -= ClientSimPlayerManager.GetBonePosition;
+            VRCPlayerApi._GetBonePosition += CountedGetBonePosition;
+            boneReadsCounted = true;
+        }
+        boneReadsPerFrame.Clear();
+        boneCountFrom = Time.frameCount + 1;
+    }
+
+    static Vector3 CountedGetBonePosition(VRCPlayerApi player, HumanBodyBones bone)
+    {
+        int frame = Time.frameCount;
+        int count;
+        boneReadsPerFrame.TryGetValue(frame, out count);
+        boneReadsPerFrame[frame] = count + 1;
+        return ClientSimPlayerManager.GetBonePosition(player, bone);
+    }
+
+    // The GetBonePosition calls per frame from the frame after counting started to the frame before this one, which
+    // must be the same on every frame (otherwise -1). The test's own steps read no bones in between.
+    static int BoneReadsPerFrame(string name)
+    {
+        int last = Time.frameCount - 1;
+        int min = int.MaxValue;
+        int max = -1;
+        for (int frame = boneCountFrom; frame <= last; frame++)
+        {
+            int count;
+            boneReadsPerFrame.TryGetValue(frame, out count);
+            min = Mathf.Min(min, count);
+            max = Mathf.Max(max, count);
+        }
+        int frames = last - boneCountFrom + 1;
+        Debug.Log("[PushButtonTest] " + name + ": " + min + " to " + max + " bone reads per frame over " + frames + " frames");
+        if (!Check(name + " counted frames", frames > 0, "no frames")) return -1;
+        return Check(name + " same count every frame", min == max, min + " to " + max) ? min : -1;
+    }
+
+    // Puts ClientSim's own GetBonePosition back, before ClientSim unhooks it as Play Mode ends.
+    static void StopCountingBoneReads()
+    {
+        if (!boneReadsCounted) return;
+        VRCPlayerApi._GetBonePosition -= CountedGetBonePosition;
+        VRCPlayerApi._GetBonePosition += ClientSimPlayerManager.GetBonePosition;
+        boneReadsCounted = false;
     }
 
     static void RecordHaptic(VRCPlayerApi player, VRC_Pickup.PickupHand hand, float duration, float amplitude, float frequency)
