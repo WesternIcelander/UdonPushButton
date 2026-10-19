@@ -345,4 +345,78 @@ public static partial class PushButtonPlayModeTests
             Check(name + ": scene button at rest at the end", (float)button.GetProgramVariable("pressAmount") == 0f, "pressed");
         });
     }
+
+    // Plan step 8.5: a ticking button only writes its transform when its press changes. With transform.hasChanged
+    // cleared, the scene button at rest for 1 s hasn't changed; pressed by the debug fingertip, released and sprung back
+    // to rest, it has; and at rest again for 1 s it hasn't. Moving the parent still carries the button along.
+    static void AddTransformWriteTest()
+    {
+        const string name = "transform writes";
+        float travel = 0f;
+        AddStep(0.5f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            button = go != null ? go.GetComponent<UdonBehaviour>() : null;
+            if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
+            RemoveDebugTip();
+            simulatedVRPlayers.Clear();
+            travel = (float)button.GetProgramVariable("travelDistance");
+        });
+        AddStep(0.5f, () =>
+        {
+            if (button == null) return;
+            Check(name + ": in range", InRange(button), "out of range");
+            Check(name + ": at rest", (float)button.GetProgramVariable("pressAmount") == 0f, "pressed");
+            button.transform.hasChanged = false;
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Check(name + ": at rest for 1 s, unchanged", !button.transform.hasChanged, "transform changed");
+            Check(name + ": still ticked", InRange(button) && TickedButtons() >= 1, "not ticked");
+            CheckButtonAtPress(name + ": at the rest position", 0f);
+            SetLocalPress(0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            SetLocalPress(1f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            float press = (float)button.GetProgramVariable("pressAmount");
+            Check(name + ": pressed to the bottom", Mathf.Abs(press - travel) < 1e-6f, "press " + press.ToString("F5"));
+            CheckButtonAtPress(name + ": at the bottom position", travel);
+            Check(name + ": pressing changed it", button.transform.hasChanged, "transform unchanged");
+            SetLocalPress(0f);
+        });
+        // Spring-back of 19 mm at 0.1 m/s takes about 0.2 s.
+        AddStep(0.6f, () =>
+        {
+            if (button == null) return;
+            Check(name + ": back at rest", (float)button.GetProgramVariable("pressAmount") == 0f, "pressed");
+            CheckButtonAtPress(name + ": back at the rest position", 0f);
+            Check(name + ": pressed, released and back at rest: changed", button.transform.hasChanged, "transform unchanged");
+            RemoveDebugTip();
+            button.transform.hasChanged = false;
+        });
+        AddStep(1f, () =>
+        {
+            if (button == null) return;
+            Check(name + ": at rest again for 1 s, unchanged", !button.transform.hasChanged, "transform changed");
+            button.transform.parent.position += new Vector3(0f, 0.1f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckButtonAtPress(name + ": parent moved, at the new rest position", 0f);
+            button.transform.parent.position -= new Vector3(0f, 0.1f, 0f);
+        });
+        AddStep(0.3f, () =>
+        {
+            if (button == null) return;
+            CheckButtonAtPress(name + ": parent moved back, at the rest position", 0f);
+        });
+    }
 }

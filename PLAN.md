@@ -179,9 +179,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
 
   Done: [notes](plan-done/8.4-make-enabling-and-disabling-safe.md).
 
-- [ ] **8.5 Skip transform writes when nothing changed.**
+- [x] **8.5 Skip transform writes when nothing changed.**
   The button remembers the press it last applied and only writes `transform.position` when the press changes, and once after an enable or reset. A button at rest stops touching its transform, so its collider stays out of physics updates.
   *Check:* with `transform.hasChanged` cleared, a button at rest for 1 s hasn't changed; pressed, released and back at rest, it has. The full suite still passes.
+  Done: [notes](plan-done/8.5-skip-transform-writes-when-nothing-changed.md).
 
 - [ ] **8.6 Update the inspector and scene wiring.**
   The inspector shows the `manager` field and a warning box when it isn't the scene's first manager (see [Build-time check](#build-time-check)), with a **Fix** button that runs the same wiring code as the build check. `Tools/PushButton/Wire Up Scene` adds a `PushButtonManager` object at the scene root and wires the scene button to it. (8.1 already did the Wire Up Scene part, and the scene is saved with it. What's left here is the inspector warning and Fix button, and the inspector test. Consider switching Wire Up Scene to the shared wiring code once 8.7 adds it.)

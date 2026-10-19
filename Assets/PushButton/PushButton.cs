@@ -86,6 +86,10 @@ public class PushButton : UdonSharpBehaviour
     private float clickPress;
     // The press amount the button is shown at, in [0, travelDistance].
     private float pressAmount;
+    // The press ApplyPress last wrote to the transform, or -1 to make the next ApplyPress write whatever the press.
+    // A button whose press doesn't change leaves its transform alone (the parent carries it along), so a button at
+    // rest stays out of physics updates.
+    private float appliedPress = -1f;
     // Firing disarms the button; the local press rising back to releaseFraction of the travel re-arms it.
     private bool armed = true;
     // Meters short of travelDistance at which the local press counts as reaching the bottom.
@@ -359,6 +363,8 @@ public class PushButton : UdonSharpBehaviour
         // The local press is now 0, below the re-arm depth.
         armed = true;
         pressAmount = 0f;
+        // Always write here, once: the rest pose may have changed (the parent moved while the button was disabled).
+        appliedPress = -1f;
         ApplyPress(0f);
     }
 
@@ -542,10 +548,13 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Moves the button from its rest pose along the press axis by the given amount in meters.
+    /// Moves the button from its rest pose along the press axis by the given amount in meters. Skipped when the
+    /// amount is the one last written, since the button is a child of its parent and so already in place.
     /// </summary>
     private void ApplyPress(float amount)
     {
+        if (amount == appliedPress) return;
+        appliedPress = amount;
         transform.position = restWorldPos + restWorldRot * (pressAxis * amount);
     }
 
