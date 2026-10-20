@@ -196,10 +196,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
 
 ### Phase 9: Verification
 
-- [ ] **9.1 Run the editor regression pass.**
+- [x] **9.1 Run the editor regression pass.**
   Repeat the checks from 4.2, 5.3 and 6.1 with the parent rotated to (35, 120, -70), and again with `ButtonPlate` disabled.
   *Check:* all pass in both setups.
-  This was done before Phase 8 (as step 8.1). It has to be re-run once Phase 8 is done. Previous run: `AddClickTest` (4.2), `AddEngagementTest` (5.3) and `AddRangeGateTest` (6.1) now take an optional `setup` suffix for their check names. A new `AddRegressionPass(setup, plateActive)`, run twice after the inspector test, moves the parent to its scene position + (1, 0.5, -2) (1.8 m from the local player, well inside the 5 m gate), rotates it to (35, 120, -70), sets `ButtonPlate` active or disabled, checks the rest pose follows the parent and the button is at rest and armed, then runs those three tests again: first as ` (rotated parent)` with the plate on, then as ` (no plate)` with the parent still rotated and the plate disabled. `AddRegressionCleanup` then puts the parent and plate back. The scene pose is recorded in `AddSceneWiringTest`'s first step (`sceneParentPos`/`sceneParentRot`). No changes to `PushButton.cs`. UdonSharp compiled 10 scripts with no errors. Result: `[PushButtonTest] done: 627 passed, 0 failed` (up from 371), 0 errors. Both setups logged 2 action logs for the engagement and range gate passes, as in the unrotated run. The `play` timeout went from 120 to 180 s because the run now takes about 90 s.
+  Done: [notes](plan-done/9.1-run-the-editor-regression-pass.md).
 
 - [x] **9.2 Set up testing automation.** (Formerly 8.2.) Done: [notes](plan-done/9.2-set-up-testing-automation.md).
 
