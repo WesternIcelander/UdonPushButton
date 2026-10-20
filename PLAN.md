@@ -189,9 +189,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   *Check:* the scene is saved with the manager and the wiring. `AddSceneWiringTest` checks it, and a ClientSim desktop click still logs once. The inspector test checks the warning shows for a null and a wrong manager and not for the right one.
   Done: [notes](plan-done/8.6-update-the-inspector-and-scene-wiring.md).
 
-- [ ] **8.7 Add the build-time check.**
+- [x] **8.7 Add the build-time check.**
   Build on `PushButtonWiring` (8.6 added it: `FirstManager`, `AllButtons`, `Problem`, `Fix`). Add `Assets/PushButton/Editor/PushButtonBuildCheck.cs`, implementing the VRChat SDK's `IVRCSDKBuildRequestedCallback` (it runs on Build & Test and Build & Upload). Follow [Build-time check](#build-time-check). Keep the decision logic separate from the dialog so tests can answer for it, and add two menu items: `Tools/PushButton/Check Manager Wiring` (the same check, with dialogs) and `Tools/PushButton/Fix Manager Wiring` (adds the manager if needed and wires every button, without asking; choosing the menu item is the consent). Automated runs use the existing trigger's generic `menu` command to call `Fix Manager Wiring` before a build. Nothing in the `vrchat-world-unity-automation` skill or its trigger changes for PushButton.
   *Check:* Edit Mode tests (answering through the test hook, then restoring the scene): no manager + yes adds one and wires every button, including inactive ones; no manager + no changes nothing; a correctly wired scene asks nothing; a null manager, a second manager, and proxy/Udon data that disagree each count as unwired and are fixed on yes and untouched on no; two managers log the warning and use the first in hierarchy order; a scene with no buttons asks nothing. Every case returns true, so the build continues.
+  Done: [notes](plan-done/8.7-add-the-build-time-check.md).
 
 ### Phase 9: Verification
 

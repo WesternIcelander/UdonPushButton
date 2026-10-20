@@ -7,8 +7,8 @@ using UnityEngine.SceneManagement;
 using VRC.Udon;
 
 /// <summary>
-/// Shared code for wiring buttons to the scene's <see cref="PushButtonManager"/>: used by the inspector's Fix button
-/// and Tools/PushButton/Wire Up Scene. A button is wired only if its <c>manager</c> is exactly the first manager in
+/// Shared code for wiring buttons to the scene's <see cref="PushButtonManager"/>: used by the inspector's Fix button,
+/// <see cref="PushButtonBuildCheck"/> and Tools/PushButton/Wire Up Scene. A button is wired only if its <c>manager</c> is exactly the first manager in
 /// hierarchy order, in both the UdonSharp proxy and the UdonBehaviour's data.
 /// </summary>
 public static class PushButtonWiring
@@ -22,30 +22,32 @@ public static class PushButtonWiring
     /// </summary>
     public static PushButtonManager FirstManager()
     {
-        for (int i = 0; i < SceneManager.sceneCount; i++)
-        {
-            Scene scene = SceneManager.GetSceneAt(i);
-            if (!scene.isLoaded) continue;
-            foreach (GameObject root in scene.GetRootGameObjects())
-            {
-                PushButtonManager manager = root.GetComponentInChildren<PushButtonManager>(true);
-                if (manager != null) return manager;
-            }
-        }
-        return null;
+        List<PushButtonManager> managers = AllManagers();
+        return managers.Count > 0 ? managers[0] : null;
+    }
+
+    /// <summary>Every PushButtonManager in the loaded scenes, inactive ones included, in hierarchy order.</summary>
+    public static List<PushButtonManager> AllManagers()
+    {
+        return AllInLoadedScenes<PushButtonManager>();
     }
 
     /// <summary>Every PushButton in the loaded scenes, inactive ones included, in hierarchy order.</summary>
     public static List<PushButton> AllButtons()
     {
-        List<PushButton> buttons = new List<PushButton>();
+        return AllInLoadedScenes<PushButton>();
+    }
+
+    static List<T> AllInLoadedScenes<T>() where T : Component
+    {
+        List<T> found = new List<T>();
         for (int i = 0; i < SceneManager.sceneCount; i++)
         {
             Scene scene = SceneManager.GetSceneAt(i);
             if (!scene.isLoaded) continue;
-            foreach (GameObject root in scene.GetRootGameObjects()) buttons.AddRange(root.GetComponentsInChildren<PushButton>(true));
+            foreach (GameObject root in scene.GetRootGameObjects()) found.AddRange(root.GetComponentsInChildren<T>(true));
         }
-        return buttons;
+        return found;
     }
 
     /// <summary>
