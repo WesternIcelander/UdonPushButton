@@ -94,7 +94,8 @@ public static partial class PushButtonPlayModeTests
     // Plan step 7.2: renames the parent to PushButtonAssembly and turns it 180° on Y to face the spawn, gives the child
     // button a PushButton with travel 0.019 along local -Z, points it at a ButtonActionExample on the parent with
     // OnButtonPressed, wires it to the scene's first PushButtonManager (adding one at the scene root if there is none,
-    // plan step 8.1), and saves the scene. Safe to run again.
+    // plan step 8.1) through the inspector's shared PushButtonWiring.Fix (plan step 8.6), and saves the scene. Safe to
+    // run again.
     [MenuItem("Tools/PushButton/Wire Up Scene")]
     static void WireUpScene()
     {
@@ -115,17 +116,7 @@ public static partial class PushButtonPlayModeTests
         ButtonActionExample example = parent.GetComponent<ButtonActionExample>();
         if (example == null) example = UdonSharpUndo.AddComponent<ButtonActionExample>(parent.gameObject);
 
-        PushButtonManager manager = FirstManager(go.scene);
-        if (manager == null)
-        {
-            GameObject managerObject = new GameObject(ManagerName);
-            SceneManager.MoveGameObjectToScene(managerObject, go.scene);
-            Undo.RegisterCreatedObjectUndo(managerObject, "Wire Up PushButton Scene");
-            manager = UdonSharpUndo.AddComponent<PushButtonManager>(managerObject);
-        }
-
         SerializedObject serialized = new SerializedObject(pushButton);
-        serialized.FindProperty("manager").objectReferenceValue = manager;
         serialized.FindProperty("localPressAxis").vector3Value = new Vector3(0f, 0f, -1f);
         serialized.FindProperty("travelDistance").floatValue = 0.019f;
         serialized.FindProperty("targetBehaviour").objectReferenceValue = UdonSharpEditorUtility.GetBackingUdonBehaviour(example);
@@ -134,19 +125,9 @@ public static partial class PushButtonPlayModeTests
         UdonSharpEditorUtility.CopyProxyToUdon(pushButton);
 
         EditorSceneManager.MarkSceneDirty(go.scene);
+        PushButtonWiring.Fix();
         EditorSceneManager.SaveScene(go.scene);
         Debug.Log("[PushButtonTest] wired up " + ButtonPath + " and saved " + go.scene.name);
-    }
-
-    // The scene's first PushButtonManager in hierarchy order (root objects in scene order, then depth first), or null.
-    static PushButtonManager FirstManager(UnityEngine.SceneManagement.Scene scene)
-    {
-        foreach (GameObject root in scene.GetRootGameObjects())
-        {
-            PushButtonManager manager = root.GetComponentInChildren<PushButtonManager>(true);
-            if (manager != null) return manager;
-        }
-        return null;
     }
 
     static void OnPlayModeStateChanged(PlayModeStateChange change)

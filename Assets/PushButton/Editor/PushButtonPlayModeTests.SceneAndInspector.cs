@@ -97,5 +97,54 @@ public static partial class PushButtonPlayModeTests
                 && System.Array.IndexOf(buttonEvents, "OnPlayerJoined") < 0 && System.Array.IndexOf(buttonEvents, "GetType") < 0, "got " + listed);
             Object.DestroyImmediate(holder);
         });
+        AddManagerWarningTest(name);
+    }
+
+    // Plan step 8.6: the inspector's wiring warning shows for a null manager, another manager, and proxy/Udon data that
+    // disagree, and not for the scene's first manager. Changes only the proxy's field (Udon doesn't read it) and puts it
+    // back.
+    static void AddManagerWarningTest(string inspector)
+    {
+        string name = inspector + " manager warning";
+        AddStep(0.1f, () =>
+        {
+            GameObject go = GameObject.Find(ButtonPath);
+            PushButton proxy = go != null ? go.GetComponent<PushButton>() : null;
+            if (!Check(name + ": find PushButton component", proxy != null, "no PushButton on " + ButtonPath)) return;
+            PushButtonManager first = PushButtonWiring.FirstManager();
+            if (!Check(name + ": scene has a manager", first != null && first.gameObject.name == ManagerName, "got " + (first != null ? first.name : "null"))) return;
+            UdonBehaviour firstBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(first);
+            Object[] targets = { proxy };
+
+            string warning = PushButtonEditor.WiringWarning(targets);
+            Check(name + " none for the scene's manager", warning == null, "got \"" + warning + "\"");
+            Check(name + " decision: right manager", PushButtonWiring.Problem(first, firstBacking, first) == null, "warned");
+
+            PushButtonManager saved = proxy.manager;
+            GameObject other = new GameObject("PushButtonTest OtherManager");
+            other.SetActive(false);
+            PushButtonManager otherManager = other.AddComponent<PushButtonManager>();
+            Check(name + ": first manager unchanged by a later one", PushButtonWiring.FirstManager() == first, "got " + PushButtonWiring.FirstManager());
+            try
+            {
+                proxy.manager = null;
+                warning = PushButtonEditor.WiringWarning(targets);
+                Check(name + " shows for a null manager", warning != null, "no warning");
+                proxy.manager = otherManager;
+                warning = PushButtonEditor.WiringWarning(targets);
+                Check(name + " shows for another manager", warning != null, "no warning");
+            }
+            finally
+            {
+                proxy.manager = saved;
+                Object.DestroyImmediate(other);
+            }
+            Check(name + " gone once restored", PushButtonEditor.WiringWarning(targets) == null, "still warns");
+
+            Check(name + " decision: null manager", PushButtonWiring.Problem(null, firstBacking, first) != null, "no warning");
+            Check(name + " decision: Udon data null", PushButtonWiring.Problem(first, null, first) != null, "no warning");
+            Check(name + " decision: Udon data disagrees", PushButtonWiring.Problem(first, go.GetComponent<UdonBehaviour>(), first) != null, "no warning");
+            Check(name + " decision: no manager in the scene", PushButtonWiring.Problem(null, null, null) != null, "no warning");
+        });
     }
 }

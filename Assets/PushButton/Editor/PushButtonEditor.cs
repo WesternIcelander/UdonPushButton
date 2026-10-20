@@ -10,6 +10,8 @@ using VRC.Udon;
 /// <summary>
 /// Inspector for <see cref="PushButton"/>: the default fields, with <c>eventName</c> as a dropdown of the target's
 /// public events when the target is an UdonSharpBehaviour. Graph programs (and no target) keep a free-text field.
+/// Below <c>manager</c>, a warning box shows when a button isn't wired to the scene's first manager, with a Fix button
+/// that runs <see cref="PushButtonWiring.Fix"/>.
 /// </summary>
 [CustomEditor(typeof(PushButton))]
 public class PushButtonEditor : Editor
@@ -21,14 +23,48 @@ public class PushButtonEditor : Editor
         serializedObject.Update();
         SerializedProperty property = serializedObject.GetIterator();
         bool enterChildren = true;
+        bool fix = false;
         while (property.NextVisible(enterChildren))
         {
             enterChildren = false;
             if (property.name == "m_Script") continue;
             if (property.name == "eventName") DrawEventName(property);
             else EditorGUILayout.PropertyField(property, true);
+            if (property.name == "manager") fix = DrawManagerWarning();
         }
         serializedObject.ApplyModifiedProperties();
+        // After ApplyModifiedProperties, so this inspector's own values don't overwrite the fix.
+        if (fix)
+        {
+            PushButtonWiring.Fix();
+            GUIUtility.ExitGUI();
+        }
+    }
+
+    /// <summary>The warning for the first of <paramref name="buttons"/> that isn't wired, or null when all are.</summary>
+    internal static string WiringWarning(UnityEngine.Object[] buttons)
+    {
+        PushButtonManager first = PushButtonWiring.FirstManager();
+        foreach (UnityEngine.Object o in buttons)
+        {
+            PushButton button = o as PushButton;
+            string problem = button != null ? PushButtonWiring.Problem(button, first) : null;
+            if (problem != null) return problem;
+        }
+        return null;
+    }
+
+    // Draws the warning box and its Fix button (off in Play Mode) when needed. Returns whether Fix was clicked.
+    bool DrawManagerWarning()
+    {
+        string warning = WiringWarning(targets);
+        if (warning == null) return false;
+        EditorGUILayout.HelpBox(warning, MessageType.Warning);
+        using (new EditorGUI.DisabledScope(Application.isPlaying))
+        {
+            return GUILayout.Button(new GUIContent("Fix",
+                "Adds a PushButtonManager if the scene has none, wires every button to the first one, and saves the scene."));
+        }
     }
 
     void DrawEventName(SerializedProperty eventName)
