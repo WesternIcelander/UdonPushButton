@@ -23,9 +23,11 @@ public class PushButtonManager : UdonSharpBehaviour
     [Range(0f, 1f)]
     public float hapticStrength = 0.3f;
 
-    [Header("Desktop")]
+    [Header("Click")]
     [Tooltip("Seconds for the click press-in animation.")]
     public float clickPressDuration = 0.12f;
+    [Tooltip("VR players can also click buttons with the trigger, as desktop players click them.")]
+    public bool allowVRTrigger = false;
 
     [Header("Debug")]
     [Tooltip("Editor only: acts as the local player's fingertip for testing without a headset. Ignored in builds.")]
@@ -223,6 +225,9 @@ public class PushButtonManager : UdonSharpBehaviour
         button.useMiddleFingers = useMiddleFingers;
         button.hapticStrength = hapticStrength;
         button.clickPressDuration = clickPressDuration;
+        button.allowVRTrigger = allowVRTrigger;
+        // Re-applies Interact for the new allowVRTrigger.
+        button._UpdateInteractive();
     }
 
     /// <summary>

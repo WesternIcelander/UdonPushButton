@@ -85,6 +85,16 @@ public static partial class PushButtonPlayModeTests
             List<string> stillShown = new List<string>(moved).FindAll(shown.Contains);
             Check(name + " moved settings not shown", stillShown.Count == 0, "still shows " + string.Join(", ", stillShown));
             Check(name + " interactText still shown", shown.Contains("interactText"), "fields: " + string.Join(", ", shown));
+            // Plan step 8.9: interactText heads the Action group, above targetBehaviour, and there's no Desktop header.
+            int interactIndex = shown.IndexOf("interactText");
+            Check(name + " interactText first under Action", interactIndex >= 0 && shown.IndexOf("targetBehaviour") == interactIndex + 1
+                && HeaderOf(typeof(PushButton), "interactText") == "Action", "fields: " + string.Join(", ", shown) + ", header " + HeaderOf(typeof(PushButton), "interactText"));
+            List<string> headers = new List<string>();
+            foreach (System.Reflection.FieldInfo field in typeof(PushButton).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+            {
+                foreach (HeaderAttribute header in field.GetCustomAttributes(typeof(HeaderAttribute), false)) headers.Add(header.header);
+            }
+            Check(name + " no Desktop header", !headers.Contains("Desktop"), "headers: " + string.Join(", ", headers));
 
             AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
             if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
@@ -108,6 +118,18 @@ public static partial class PushButtonPlayModeTests
             Object.DestroyImmediate(holder);
         });
         AddManagerWarningTest(name);
+    }
+
+    // The Header attribute on a public field of the type, or on the nearest field declared before it, or null.
+    static string HeaderOf(System.Type type, string fieldName)
+    {
+        string header = null;
+        foreach (System.Reflection.FieldInfo field in type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public))
+        {
+            foreach (HeaderAttribute attribute in field.GetCustomAttributes(typeof(HeaderAttribute), false)) header = attribute.header;
+            if (field.Name == fieldName) return header;
+        }
+        return null;
     }
 
     // Plan step 8.6: the inspector's wiring warning shows for a null manager, another manager, and proxy/Udon data that

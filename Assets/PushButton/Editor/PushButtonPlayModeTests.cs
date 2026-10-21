@@ -68,6 +68,10 @@ public static partial class PushButtonPlayModeTests
     static readonly Dictionary<int, int> boneReadsPerFrame = new Dictionary<int, int>();
     static bool boneReadsCounted;
     static int boneCountFrom;
+    // Network events sent while the recording hook is installed (plan step 8.9), as "<target> <event>".
+    static readonly List<string> sentNetworkEvents = new List<string>();
+    static bool networkEventsRecorded;
+    static System.Delegate networkEventRecorder;
     static readonly List<GameObject> extraButtons = new List<GameObject>();
     // The enable/disable test (plan step 8.4): the three ways to turn a button off, the scene button while the test
     // swaps `button`, the remote VR player whose finger presses, run-once code for inside the next action (called from
@@ -142,6 +146,7 @@ public static partial class PushButtonPlayModeTests
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
             StopCountingBoneReads();
+            StopRecordingNetworkEvents();
             EditorApplication.update -= WatchFirstRegistration;
         }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
@@ -171,6 +176,7 @@ public static partial class PushButtonPlayModeTests
         AddRemotePressTest();
         AddVRFilterTest();
         AddHapticsTest();
+        AddVRTriggerTest();
         AddHandEarlyOutTest();
         AddBoneReadCountTest();
         AddManagerTickTest();

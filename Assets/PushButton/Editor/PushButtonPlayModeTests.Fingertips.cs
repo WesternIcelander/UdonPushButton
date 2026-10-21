@@ -85,6 +85,10 @@ public static partial class PushButtonPlayModeTests
             if (button == null) return;
             Check(name + " player back at start", (Networking.LocalPlayer.GetPosition() - savedPlayerPos).magnitude < 0.01f,
                 "at " + Networking.LocalPlayer.GetPosition().ToString("F3"));
+            // Back on desktop, with the buttons interactive again (plan step 8.9: a settings push while the local
+            // player counted as VR disabled Interact).
+            SimulateVR(Networking.LocalPlayer, false);
+            ApplySettingsNow();
         });
     }
 
@@ -304,6 +308,8 @@ public static partial class PushButtonPlayModeTests
             RemoveDebugTip();
             CheckTrackedPlayers(name + " at start");
             savedParentPos = button.transform.parent.position;
+            // Only VR players press with their fingertips (5.4).
+            SimulateVR(Networking.LocalPlayer, true);
             if (!Check(name + ": local avatar has index bones", MoveButtonOntoLeftIndex(Networking.LocalPlayer, -0.02f), "no finger bones")) button = null;
         });
         AddStep(0.3f, () =>
@@ -359,6 +365,7 @@ public static partial class PushButtonPlayModeTests
             int slot = SlotOf(Networking.LocalPlayer, 0);
             Check(name + " released once the button moves away", slot >= 0 && !((bool[])button.GetProgramVariable("fingertipEngaged"))[slot]
                 && (float)button.GetProgramVariable("localPress") == 0f, "still pressed");
+            SimulateVR(Networking.LocalPlayer, false);
         });
     }
 
@@ -621,6 +628,9 @@ public static partial class PushButtonPlayModeTests
             RemoveDebugTip();
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             simulatedVRPlayers.Clear();
+            // Plan step 8.9: the buttons judge the local player's platform again when the manager pushes its settings,
+            // so they're interactive again for the desktop player.
+            ApplySettingsNow();
             TearDownActionTarget(name);
         });
     }

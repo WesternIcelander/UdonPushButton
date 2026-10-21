@@ -87,7 +87,7 @@ public static partial class PushButtonPlayModeTests
     }
 
     // Plan step 8.8: one of the manager's shared settings (fingertipRadius, useIndexFingers, useMiddleFingers,
-    // hapticStrength, clickPressDuration), read from the scene's manager.
+    // hapticStrength, clickPressDuration, and allowVRTrigger from 8.9), read from the scene's manager.
     static object Setting(string setting)
     {
         UdonBehaviour manager = SceneManagerUdon();
@@ -101,6 +101,13 @@ public static partial class PushButtonPlayModeTests
         if (manager == null) return;
         manager.SetProgramVariable(setting, value);
         manager.SendCustomEvent("ApplySettings");
+    }
+
+    // Pushes the scene manager's current settings to every registered button.
+    static void ApplySettingsNow()
+    {
+        UdonBehaviour manager = SceneManagerUdon();
+        if (manager != null) manager.SendCustomEvent("ApplySettings");
     }
 
     static VRCPlayerApi FindPlayer(string displayName)

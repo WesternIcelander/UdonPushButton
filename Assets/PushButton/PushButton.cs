@@ -19,6 +19,8 @@ public class PushButton : UdonSharpBehaviour
     public PushButtonManager manager;
 
     [Header("Action")]
+    [Tooltip("Interact tooltip text, shown to desktop and mobile players (and VR players when the manager allows the trigger).")]
+    public string interactText = "Press";
     [Tooltip("Behaviour to call when the button is pressed (UdonSharp or Graph program).")]
     public UdonBehaviour targetBehaviour;
     [Tooltip("Custom event sent to the target behaviour. Runs on the presser's client only.")]
@@ -35,10 +37,6 @@ public class PushButton : UdonSharpBehaviour
     [Tooltip("Spring-back speed in meters per second.")]
     public float returnSpeed = 0.1f;
 
-    [Header("Desktop")]
-    [Tooltip("Interact tooltip text.")]
-    public string interactText = "Press";
-
     // The manager's shared settings (see PushButtonManager), written by the manager whenever it registers this button
     // and by its ApplySettings. The tick uses only these copies, so it never reads another behaviour's fields.
     [System.NonSerialized] public float fingertipRadius = 0.008f;
@@ -46,6 +44,7 @@ public class PushButton : UdonSharpBehaviour
     [System.NonSerialized] public bool useMiddleFingers = false;
     [System.NonSerialized] public float hapticStrength = 0.3f;
     [System.NonSerialized] public float clickPressDuration = 0.12f;
+    [System.NonSerialized] public bool allowVRTrigger = false;
 
     // Rest pose relative to the parent, captured once on the first enable. The button is always at rest while
     // disabled, so it's never captured from a pressed position.
@@ -85,7 +84,8 @@ public class PushButton : UdonSharpBehaviour
     private bool armed = true;
     // Meters short of travelDistance at which the local press counts as reaching the bottom.
     private const float FireTolerance = 0.0005f;
-    // Whether the local player is in VR, set once on the first enable: VR players press with their fingers, everyone else clicks.
+    // Whether the local player is in VR, set on the first enable and whenever the manager pushes its settings: VR players
+    // press with their fingers (and click with the trigger only when allowVRTrigger is on), everyone else clicks.
     private bool localIsVR;
     // The click animation: clickPress runs 0 -> travelDistance over clickPressDuration from clickStartTime, holds the
     // bottom for one frame, then releases and springs back. Only a local click (clickIsLocal) can fire the action.
@@ -165,11 +165,8 @@ public class PushButton : UdonSharpBehaviour
         ComputeContactBox(true);
         SetUpLocalInput();
         initialized = true;
-        if (manager == null)
-        {
-            Debug.LogWarning("[PushButton] " + name + ": no manager is set, so the button does nothing");
-            DisableInteractive = true;
-        }
+        // SetUpLocalInput has already made it unclickable.
+        if (manager == null) Debug.LogWarning("[PushButton] " + name + ": no manager is set, so the button does nothing");
     }
 
     /// <summary>
@@ -198,26 +195,32 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Makes the collider a trigger so it never blocks hands or players. VR players press with their fingers, so
-    /// Interact is disabled for them; desktop and mobile players (or no local player at all) click it instead.
+    /// Makes the collider a trigger so it never blocks hands or players, and sets up Interact (see _UpdateInteractive).
     /// </summary>
     private void SetUpLocalInput()
     {
         Collider ownCollider = GetComponent<Collider>();
         if (ownCollider != null) ownCollider.isTrigger = true;
         else Debug.LogWarning("[PushButton] " + name + ": no collider, so desktop and mobile players can't click it");
+        _UpdateInteractive();
+    }
 
+    /// <summary>
+    /// Desktop and mobile players (or no local player at all) click the button. VR players press with their fingers,
+    /// so Interact is disabled for them unless the manager's allowVRTrigger is on. A button with no manager can't be
+    /// clicked at all. Called by the manager whenever it pushes its settings, so ApplySettings can toggle it at runtime.
+    /// </summary>
+    public void _UpdateInteractive()
+    {
         VRCPlayerApi localPlayer = Networking.LocalPlayer;
         localIsVR = localPlayer != null && localPlayer.IsUserInVR();
-        if (localIsVR)
+        if (manager == null || (localIsVR && !allowVRTrigger))
         {
             DisableInteractive = true;
+            return;
         }
-        else
-        {
-            DisableInteractive = false;
-            InteractionText = interactText;
-        }
+        DisableInteractive = false;
+        InteractionText = interactText;
     }
 
     /// <summary>
@@ -240,9 +243,15 @@ public class PushButton : UdonSharpBehaviour
         seenGenerations = generations;
     }
 
+    /// <summary>
+    /// A desktop or mobile click, or a VR trigger click (allowVRTrigger): the same click animation, network event and
+    /// action either way, with no haptics. Ignored while Interact is disabled, and while the local player's own
+    /// fingertip (or the debug fingertip) is pushing the button in, so a hand pressing it can't click it as well.
+    /// Remote fingertips never block it, so other players can't stop someone using the button by holding it in.
+    /// </summary>
     public override void Interact()
     {
-        if (!IsLive()) return;
+        if (!IsLive() || DisableInteractive || localPress > 0f) return;
         StartClickAnimation(true);
         SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetPlayClickAnimation));
     }

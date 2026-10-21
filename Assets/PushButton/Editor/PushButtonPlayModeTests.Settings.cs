@@ -13,8 +13,8 @@ public static partial class PushButtonPlayModeTests
     const float TestRadius = 0.02f;
     const float TestHaptic = 0.7f;
     const float TestClickDuration = 0.8f;
-    static readonly string[] SettingNames = { "fingertipRadius", "useIndexFingers", "useMiddleFingers", "hapticStrength", "clickPressDuration" };
-    static readonly object[] TestSettings = { TestRadius, false, true, TestHaptic, TestClickDuration };
+    static readonly string[] SettingNames = { "fingertipRadius", "useIndexFingers", "useMiddleFingers", "hapticStrength", "clickPressDuration", "allowVRTrigger" };
+    static readonly object[] TestSettings = { TestRadius, false, true, TestHaptic, TestClickDuration, true };
     static object[] savedSettings;
     // Set by the first-tick watcher: whether the scene-load button's copies matched once it was first registered.
     static string firstRegisteredSettings;

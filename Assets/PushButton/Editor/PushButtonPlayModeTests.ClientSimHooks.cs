@@ -8,8 +8,10 @@ using VRC.SDK3.ClientSim;
 using VRC.SDKBase;
 using VRC.Udon;
 using VRC.Udon.Common;
+using VRC.Udon.Common.Interfaces;
+using VRC.SDK3.UdonNetworkCalling;
 
-// Hooks into ClientSim: counting bone reads, recording haptics and simulating VR players.
+// Hooks into ClientSim: counting bone reads, recording haptics and network events, and simulating VR players.
 public static partial class PushButtonPlayModeTests
 {
     // Replaces ClientSim's GetBonePosition with one that counts calls per frame (or restarts the count), from the next
@@ -119,5 +121,58 @@ public static partial class PushButtonPlayModeTests
         VRCPlayerApi._IsUserInVR -= SimulatedIsUserInVR;
         VRCPlayerApi._IsUserInVR += ClientSimPlayerManager.IsUserInVR;
         isUserInVROverridden = false;
+    }
+
+    // Records every network event sent from now on (or clears the record), as "<target> <event>", alongside ClientSim's
+    // own handler, which drops events sent to Others (ClientSim has no other clients). NetworkCalling's proxy isn't
+    // public outside ClientSim, so it's reached by reflection.
+    static void StartRecordingNetworkEvents()
+    {
+        if (!networkEventsRecorded)
+        {
+            System.Reflection.PropertyInfo proxy = NetworkEventProxy();
+            if (!Check("network event hook: NetworkCalling.SendCustomNetworkEventProxy", proxy != null, "not found; static members: " + NetworkCallingMembers())) return;
+            networkEventRecorder = System.Delegate.CreateDelegate(proxy.PropertyType, typeof(PushButtonPlayModeTests).GetMethod(nameof(RecordNetworkEvent),
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic));
+            proxy.SetValue(null, System.Delegate.Combine((System.Delegate)proxy.GetValue(null), networkEventRecorder));
+            networkEventsRecorded = true;
+        }
+        sentNetworkEvents.Clear();
+    }
+
+    static System.Reflection.PropertyInfo NetworkEventProxy()
+    {
+        return typeof(NetworkCalling).GetProperty("SendCustomNetworkEventProxy",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+    }
+
+    static string NetworkCallingMembers()
+    {
+        List<string> names = new List<string>();
+        foreach (System.Reflection.MemberInfo member in typeof(NetworkCalling).GetMembers(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+        {
+            names.Add(member.MemberType + " " + member.Name);
+        }
+        return string.Join(", ", names);
+    }
+
+    static void RecordNetworkEvent(IUdonEventReceiver receiver, NetworkEventTarget target, string eventName, System.Memory<object> parameters)
+    {
+        sentNetworkEvents.Add(target + " " + eventName);
+    }
+
+    static void StopRecordingNetworkEvents()
+    {
+        if (!networkEventsRecorded) return;
+        System.Reflection.PropertyInfo proxy = NetworkEventProxy();
+        proxy.SetValue(null, System.Delegate.Remove((System.Delegate)proxy.GetValue(null), networkEventRecorder));
+        networkEventsRecorded = false;
+    }
+
+    // The network events recorded since StartRecordingNetworkEvents are exactly `expected`, in order.
+    static void CheckNetworkEvents(string name, params string[] expected)
+    {
+        string sent = string.Join(", ", sentNetworkEvents);
+        Check(name, sent == string.Join(", ", expected), "sent [" + sent + "], expected [" + string.Join(", ", expected) + "]");
     }
 }
