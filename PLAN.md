@@ -9,7 +9,7 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 - **VR players** push it with their avatar's fingertips. The button moves along its press axis and stops at a set depth. When it reaches that depth, it fires a configurable action.
 - **Desktop and mobile players** click it (a trigger collider with `Interact()`). The button plays a short press-in/return animation and fires the same action.
 - **Every player sees the button move, whatever their own platform.** There is no position sync. Each client works out the animation itself from the avatar bone data VRChat already sends, and a desktop click sends one small network event so other clients play the click animation.
-- **Only the player who pressed it runs the action.** If the action should affect everyone, the target behaviour does its own networking.
+- **Only the player who pressed it runs the action.** If the action should affect everyone, the target behaviour does its own networking. The optional "anyone pressed" and "anyone released" events (8.11) are the exception: they run on every client, for things like sound effects.
 - The **travel distance** is one Inspector value: the button stops at that depth and fires there.
 - The **action** is a target UdonBehaviour plus a custom event name, both set in the Inspector.
 - It works with **any object, at any rotation or scale**, under any parent. **Only the button itself is animated.** It never references or needs a backing plate.
@@ -148,7 +148,7 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 
 ### Phase 8: Shared manager
 
-Moves the per-frame work out of each button into one `PushButtonManager`, makes enabling and disabling buttons safe, and adds the build-time wiring check. Steps 5.1, 5.2, 5.4, 6.1 and 6.2 move into the manager; 5.3's engagement, Phases 2–4 and 5.5 stay on the button. Every step keeps the whole Play Mode suite passing, updating older tests where the move changes how they drive the button. Steps 8.8–8.10 then move the shared settings to the manager and add the VR trigger option, held presses and the release action.
+Moves the per-frame work out of each button into one `PushButtonManager`, makes enabling and disabling buttons safe, and adds the build-time wiring check. Steps 5.1, 5.2, 5.4, 6.1 and 6.2 move into the manager; 5.3's engagement, Phases 2–4 and 5.5 stay on the button. Every step keeps the whole Play Mode suite passing, updating older tests where the move changes how they drive the button. Steps 8.8–8.11 then move the shared settings to the manager and add the VR trigger option, held presses, the release action and the "anyone" events.
 
 - [x] **8.1 Add the manager and make it required.**
   Add `Assets/PushButton/PushButtonManager.cs` and its `PushButtonManager.asset` program asset (`NoVariableSync`). Give `PushButton` a `manager` field (new `Setup` Inspector group, see [Inspector fields](#inspector-fields)). Move player tracking (5.1) from the button into the manager, using stable player slots (see [Manager](#manager)). Remove `OnPlayerJoined` / `OnPlayerLeft` / `trackedPlayers` from the button. A button with no manager is inert: it logs one warning, sets `DisableInteractive = true`, never moves and never fires.
@@ -208,6 +208,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   - **Release action.** Add `string releaseEventName` (empty by default) to the button's `Action` group, under `eventName`. It's sent to the same `targetBehaviour` as `eventName`, on the presser's client only. When it's null or empty, no release event is sent at all. It fires exactly once after each fired press action, at the first of: the click's input is released; the local press rises back to the re-arm point (`travelDistance * releaseFraction`), which is how fingertip presses release; or the button resets mid-press (disabled, manager disabled, out of range), so every press gets its release.
   *Check:* tests (driving the input release through ClientSim or the manager's `InputUse` handler): a click held for 1 s stays at the bottom, fires the press once, and fires the release once when the input is released, then springs back; a quick tap still animates fully and fires press then release once each; a held networked click holds on the remote copy until `NetReleaseClick`, and a release that arrives early lets the press-in finish; the remote hold ends when the presser leaves; a fingertip fires the release once when it rises past the re-arm point, and not while it wobbles below it; a null and an empty `releaseEventName` each send nothing and log no error, while the press event still fires; disabling the button or the manager mid-hold fires the release once and leaves the button at rest; with 8.9 on, a VR trigger hold behaves like a mouse hold; release actions are never fired by remote presses.
 
+- [ ] **8.11 Add "anyone pressed" and "anyone released" events.**
+  Add `string anyonePressedEventName` and `string anyoneReleasedEventName` (both empty by default) to the button's `Action` group, under `releaseEventName`. They go to the same `targetBehaviour`, but on **every** client, for things every player should notice, like a sound effect. When the presser's own press event fires (3.2), the button sends `anyonePressedEventName` locally straight away, then `SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetAnyonePressed))`. `NetAnyonePressed()` sends the same event on each other client. `anyoneReleasedEventName` does the same through `NetAnyoneReleased()` whenever the presser's release fires (8.10's rules, including a reset mid-press), so every "anyone pressed" is followed by one "anyone released". These events fire whether or not `eventName` and `releaseEventName` are set. On the presser, the order is: press event, then anyone pressed; release event, then anyone released. When a name is null or empty, nothing is sent for it, locally or over the network, so unused events cost no network traffic. Receivers don't check range or VR status, so a listener can decide for itself what to do with a far-away press. They ignore the event while their copy of the button is disabled or has no running manager, like networked clicks (8.4). Remote presses seen through synced bones or click animations never send these events; only the presser's network event does, so each press is announced exactly once per client.
+  *Check:* tests: a local fingertip press and a click each send anyone pressed once locally, after the press event, and one `NetAnyonePressed` network event; the release sends anyone released once locally, after the release event, and one `NetAnyoneReleased`; calling `NetAnyonePressed` / `NetAnyoneReleased` directly sends the event once and never the presser-only events; a remote finger press or `NetPlayClickAnimation` sends no anyone events; null and empty names send nothing and no network event; they're ignored while the button is disabled; disabling mid-hold sends anyone released once.
+
 ### Phase 9: Verification
 
 - [x] **9.1 Run the editor regression pass.**
@@ -225,6 +229,7 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   - a button that starts disabled and is enabled after B joins → B's VR push animates it on A;
   - with `allowVRTrigger` on, a VR trigger click on A → animates on B; action log only on A;
   - a held click on A (mouse and VR trigger) → stays pressed on B until released on A; press and release logs only on A;
+  - with 8.11's events set, every press and release on A (finger, click, VR trigger) logs anyone pressed / anyone released once on A and once on B;
   - on mobile, a held tap releases when the finger lifts. If the platform never sends the release, note it and fall back to a plain tap there.
 
 - [ ] **9.4 Run the real VR test (headset).**
@@ -316,6 +321,8 @@ A disabled button holds no state that can go stale, so turning it off and on at 
 | | `UdonBehaviour targetBehaviour` | – | Behaviour to call (works with both UdonSharp and Graph programs) |
 | | `string eventName` | – | Event passed to `SendCustomEvent`, which runs on the presser's client only |
 | | `string releaseEventName` | – | Optional (8.10). Event sent to the same target when the press is released, on the presser's client only. Null or empty sends nothing |
+| | `string anyonePressedEventName` | – | Optional (8.11). Sent to the same target on every client when anyone's press fires. Null or empty sends nothing |
+| | `string anyoneReleasedEventName` | – | Optional (8.11). Sent to the same target on every client when anyone's press is released. Null or empty sends nothing |
 | Travel | `Vector3 localPressAxis` | (0, 0, -1) | Press direction in the button's local space |
 | | `float travelDistance` | 0.019 | Meters. The stop depth and the trigger depth |
 | | `float releaseFraction` | 0.5 | The button re-arms once it rises back above this fraction of travel |
@@ -345,6 +352,7 @@ From 8.8 these live on `PushButtonManager` and apply to every button:
 - Fire when the local press amount is `>= travelDistance - 0.0005` and the button is armed. Then disarm, and play haptics if in VR.
 - Re-arm when the local press amount is `<= travelDistance * releaseFraction`.
 - From 8.10, after a fire, the release action (if set) fires once at the first of: the click's input is released, the button re-arms, or the button resets mid-press.
+- From 8.11, the presser's press and release also send "anyone pressed" / "anyone released" (if set) locally and, through a network event, on every other client. These are the only events that run on clients other than the presser's.
 
 ### Risks and limitations
 
