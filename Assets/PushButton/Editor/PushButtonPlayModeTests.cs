@@ -43,7 +43,11 @@ public static partial class PushButtonPlayModeTests
     static GameObject actionTarget;
     static UdonBehaviour savedTarget;
     static string savedEventName;
+    static string savedReleaseEventName;
     static int actionCount;
+    // Release action logs (plan step 8.10), and the order of press and release logs since SetUpActionTarget.
+    static int releaseCount;
+    static readonly List<string> actionOrder = new List<string>();
     static float savedClickDuration;
     static float clickTime;
     static Vector3 savedPlayerPos;
@@ -177,6 +181,7 @@ public static partial class PushButtonPlayModeTests
         AddVRFilterTest();
         AddHapticsTest();
         AddVRTriggerTest();
+        AddHoldTest();
         AddHandEarlyOutTest();
         AddBoneReadCountTest();
         AddManagerTickTest();

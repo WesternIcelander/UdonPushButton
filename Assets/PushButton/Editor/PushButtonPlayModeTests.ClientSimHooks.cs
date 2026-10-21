@@ -169,6 +169,24 @@ public static partial class PushButtonPlayModeTests
         networkEventsRecorded = false;
     }
 
+    // Releases the use input (left mouse, or the VR trigger) the way ClientSim's Udon input sends it: InputUse(false)
+    // to every UdonBehaviour, through UdonManager. Sends no use-down, which would interact with whatever the player
+    // looks at.
+    static void ReleaseUse()
+    {
+        UdonManager.Instance.RunInputAction(UdonManager.UDON_INPUT_USE, new UdonInputEventArgs(false, HandType.RIGHT));
+    }
+
+    // Runs the action as if it were a network event sent by the player, so NetworkCalling.CallingPlayer is that
+    // player, as ClientSim does for the network events it delivers.
+    static void AsCaller(VRCPlayerApi player, System.Action action)
+    {
+        System.Reflection.MethodInfo method = typeof(NetworkCalling).GetMethod("WithNetworkCallingContext",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+        if (!Check("network caller: NetworkCalling.WithNetworkCallingContext", method != null, "not found; static members: " + NetworkCallingMembers())) return;
+        method.Invoke(null, new object[] { player, action });
+    }
+
     // The network events recorded since StartRecordingNetworkEvents are exactly `expected`, in order.
     static void CheckNetworkEvents(string name, params string[] expected)
     {

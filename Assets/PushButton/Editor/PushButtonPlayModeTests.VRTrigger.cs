@@ -7,6 +7,7 @@ using VRC.Udon;
 public static partial class PushButtonPlayModeTests
 {
     const string NetClickEvent = "Others NetPlayClickAnimation";
+    const string NetReleaseEvent = "Others NetReleaseClick";
 
     // With the local player faked as VR: with allowVRTrigger off, the button isn't interactive and Interact does
     // nothing; with it on, it's interactive with interactText, and Interact animates, fires once, sends the network
@@ -42,7 +43,7 @@ public static partial class PushButtonPlayModeTests
             Check(name + " off: not interactive", button.DisableInteractive && !button.IsInteractive, "DisableInteractive " + button.DisableInteractive);
             ClientSimUdonHelper helper = go.GetComponent<ClientSimUdonHelper>();
             Check(name + " off: ClientSim can't interact", helper == null || !helper.CanInteract(), "CanInteract true");
-            button.Interact();
+            Tap(button);
             Check(name + " off: Interact starts no click", !(bool)button.GetProgramVariable("clickActive"), "click started");
             CheckNetworkEvents(name + " off: no network event");
         });
@@ -57,10 +58,10 @@ public static partial class PushButtonPlayModeTests
             string text = (string)button.GetProgramVariable("interactText");
             Check(name + " on: interactive", !button.DisableInteractive && button.IsInteractive, "DisableInteractive " + button.DisableInteractive);
             Check(name + " on: interactText", button.InteractionText == text, "got \"" + button.InteractionText + "\", expected \"" + text + "\"");
-            GameObject.Find(ButtonPath).GetComponent<ClientSimUdonHelper>().Interact();
+            TapWithHelper(GameObject.Find(ButtonPath));
             Check(name + " on: starts a local click", (bool)button.GetProgramVariable("clickActive") && (bool)button.GetProgramVariable("clickIsLocal"),
                 "clickActive " + button.GetProgramVariable("clickActive") + ", clickIsLocal " + button.GetProgramVariable("clickIsLocal"));
-            CheckNetworkEvents(name + " on: sends the network event", NetClickEvent);
+            CheckNetworkEvents(name + " on: sends the network events for the click and its release", NetClickEvent, NetReleaseEvent);
         });
         AddStep(0.05f, () =>
         {
@@ -73,7 +74,7 @@ public static partial class PushButtonPlayModeTests
             CheckActionCount(name + " on: fires once", 1);
             Check(name + " on: no haptics", hapticCount == 0, hapticCount + " pulses");
             Check(name + " on: back at rest", (float)button.GetProgramVariable("pressAmount") == 0f, "press " + button.GetProgramVariable("pressAmount"));
-            CheckNetworkEvents(name + " on: one network event", NetClickEvent);
+            CheckNetworkEvents(name + " on: one network event each for the click and its release", NetClickEvent, NetReleaseEvent);
 
             // The local (debug) fingertip holding the button partly in blocks a trigger click.
             PlaceDebugTip(-0.01f, 0f, 0f);
@@ -87,9 +88,9 @@ public static partial class PushButtonPlayModeTests
         {
             if (button == null) return;
             Check(name + " local finger: holding it in", (float)button.GetProgramVariable("localPress") > 0f, "localPress " + button.GetProgramVariable("localPress"));
-            button.Interact();
+            Tap(button);
             Check(name + " local finger: Interact ignored", !(bool)button.GetProgramVariable("clickActive"), "click started");
-            CheckNetworkEvents(name + " local finger: no network event", NetClickEvent);
+            CheckNetworkEvents(name + " local finger: no network event", NetClickEvent, NetReleaseEvent);
             RemoveDebugTip();
         });
         AddStep(0.5f, () =>
@@ -126,10 +127,10 @@ public static partial class PushButtonPlayModeTests
             float remotePress = (float)button.GetProgramVariable("remotePress");
             Check(name + " remote finger: holding it in", remotePress > 0f && (float)button.GetProgramVariable("localPress") == 0f,
                 "remotePress " + remotePress + ", localPress " + button.GetProgramVariable("localPress"));
-            button.Interact();
+            Tap(button);
             Check(name + " remote finger: Interact clicks", (bool)button.GetProgramVariable("clickActive") && (bool)button.GetProgramVariable("clickIsLocal"),
                 "clickActive " + button.GetProgramVariable("clickActive"));
-            CheckNetworkEvents(name + " remote finger: sends the network event", NetClickEvent, NetClickEvent);
+            CheckNetworkEvents(name + " remote finger: sends the network events", NetClickEvent, NetReleaseEvent, NetClickEvent, NetReleaseEvent);
         });
         AddStep(0.4f, () =>
         {

@@ -1,7 +1,9 @@
 using UdonSharp;
 using UnityEngine;
+using VRC.SDK3.UdonNetworkCalling;
 using VRC.SDKBase;
 using VRC.Udon;
+using VRC.Udon.Common;
 using VRC.Udon.Common.Interfaces;
 
 /// <summary>
@@ -25,6 +27,8 @@ public class PushButton : UdonSharpBehaviour
     public UdonBehaviour targetBehaviour;
     [Tooltip("Custom event sent to the target behaviour. Runs on the presser's client only.")]
     public string eventName;
+    [Tooltip("Optional. Custom event sent to the same target when the press is released. Runs on the presser's client only.")]
+    public string releaseEventName;
 
     [Header("Travel")]
     [Tooltip("Press direction in the button's local space.")]
@@ -82,15 +86,24 @@ public class PushButton : UdonSharpBehaviour
     private float appliedPress = -1f;
     // Firing disarms the button; the local press rising back to releaseFraction of the travel re-arms it.
     private bool armed = true;
+    // Whether the press action has fired and its release action hasn't yet. The release fires at the first of: the
+    // click's input is released, the button re-arms, or the button resets.
+    private bool releasePending;
+    // Counts ResetToRest calls, so firing can tell whether the press action reset the button.
+    private int resetCount;
     // Meters short of travelDistance at which the local press counts as reaching the bottom.
     private const float FireTolerance = 0.0005f;
     // Whether the local player is in VR, set on the first enable and whenever the manager pushes its settings: VR players
     // press with their fingers (and click with the trigger only when allowVRTrigger is on), everyone else clicks.
     private bool localIsVR;
     // The click animation: clickPress runs 0 -> travelDistance over clickPressDuration from clickStartTime, holds the
-    // bottom for one frame, then releases and springs back. Only a local click (clickIsLocal) can fire the action.
+    // bottom while clickHeld (and for at least one frame), then releases and springs back. Only a local click
+    // (clickIsLocal) can fire the action. A local click is held until the use input is released; a remote one until
+    // NetReleaseClick arrives from its presser (clickPresserId, -1 if unknown) or the presser leaves.
     private bool clickActive;
     private bool clickIsLocal;
+    private bool clickHeld;
+    private int clickPresserId = -1;
     private float clickStartTime;
 
     // Fingertip slots per player, in the manager's order: left index, right index, left middle, right middle.
@@ -245,46 +258,90 @@ public class PushButton : UdonSharpBehaviour
 
     /// <summary>
     /// A desktop or mobile click, or a VR trigger click (allowVRTrigger): the same click animation, network event and
-    /// action either way, with no haptics. Ignored while Interact is disabled, and while the local player's own
-    /// fingertip (or the debug fingertip) is pushing the button in, so a hand pressing it can't click it as well.
-    /// Remote fingertips never block it, so other players can't stop someone using the button by holding it in.
+    /// action either way, with no haptics. Interact runs when the use input goes down; the click then holds the
+    /// bottom until the input is released (see InputUse). Ignored while Interact is disabled, and while the local
+    /// player's own fingertip (or the debug fingertip) is pushing the button in, so a hand pressing it can't click it
+    /// as well. Remote fingertips never block it, so other players can't stop someone using the button by holding it in.
     /// </summary>
     public override void Interact()
     {
         if (!IsLive() || DisableInteractive || localPress > 0f) return;
-        StartClickAnimation(true);
+        StartClickAnimation(true, -1);
         SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetPlayClickAnimation));
     }
 
     /// <summary>
+    /// Udon sends every use event to every button, so this returns straight away unless this button is holding a
+    /// local click. Any use-up releases it: the click finishes pressing in if it hasn't yet, then springs back, the
+    /// other clients are told with NetReleaseClick, and the release action fires if the press has.
+    /// </summary>
+    public override void InputUse(bool value, UdonInputEventArgs args)
+    {
+        if (value || !clickHeld || !clickIsLocal) return;
+        clickHeld = false;
+        SendCustomNetworkEvent(NetworkEventTarget.Others, nameof(NetReleaseClick));
+        if (releasePending) FireRelease();
+    }
+
+    /// <summary>
     /// Network event from another player's click: plays the same click animation, flagged non-local so it never
-    /// fires the action. Ignored when the local player is out of range, and while the button is disabled or its
-    /// manager isn't running. Deliberately doesn't check whether the local
-    /// player is in VR: every viewer sees the click, whatever their platform.
+    /// fires the action, held at the bottom until that player's NetReleaseClick. Ignored when the local player is out
+    /// of range, and while the button is disabled or its manager isn't running. Deliberately doesn't check whether the
+    /// local player is in VR: every viewer sees the click, whatever their platform.
     /// </summary>
     public void NetPlayClickAnimation()
     {
         if (!IsLive()) return;
         VRCPlayerApi localPlayer = Networking.LocalPlayer;
         if (localPlayer != null && (localPlayer.GetPosition() - transform.position).sqrMagnitude > PushButtonManager.AnimationRangeSqr) return;
-        // Don't turn a local click that is still pressing in into a non-local one, or it would never fire.
+        // Don't turn a local click that is still pressing in or held into a non-local one, or it would never fire.
         if (clickActive && clickIsLocal) return;
-        StartClickAnimation(false);
+        StartClickAnimation(false, CallerId());
     }
 
     /// <summary>
-    /// Starts (or restarts) the click animation, stamped with Time.time. Only a local click fires the action.
+    /// Network event from the presser of a remote click releasing its input: the click finishes pressing in if it
+    /// hasn't yet, then springs back. A release from anyone else is ignored, so it can't cut another player's hold short.
     /// </summary>
-    private void StartClickAnimation(bool isLocal)
+    public void NetReleaseClick()
+    {
+        if (!clickHeld || clickIsLocal || CallerId() != clickPresserId) return;
+        clickHeld = false;
+    }
+
+    /// <summary>
+    /// Releases a remote click held by a player who leaves, since their NetReleaseClick will never come.
+    /// </summary>
+    public override void OnPlayerLeft(VRCPlayerApi player)
+    {
+        if (clickHeld && !clickIsLocal && player != null && player.playerId == clickPresserId) clickHeld = false;
+    }
+
+    /// <summary>
+    /// The player ID of the network event's sender, or -1 if there is none.
+    /// </summary>
+    private int CallerId()
+    {
+        VRCPlayerApi caller = NetworkCalling.CallingPlayer;
+        return Utilities.IsValid(caller) ? caller.playerId : -1;
+    }
+
+    /// <summary>
+    /// Starts (or restarts) the click animation, stamped with Time.time and held until released. Only a local click
+    /// fires the action. presserId is a remote click's presser (-1 for a local click or an unknown sender).
+    /// </summary>
+    private void StartClickAnimation(bool isLocal, int presserId)
     {
         clickActive = true;
         clickIsLocal = isLocal;
+        clickHeld = true;
+        clickPresserId = presserId;
         clickStartTime = Time.time;
     }
 
     /// <summary>
-    /// Drives clickPress from the running click animation: in over clickPressDuration, one frame at the bottom,
-    /// then released to 0 so the button springs back at returnSpeed.
+    /// Drives clickPress from the running click animation: in over clickPressDuration, at the bottom while held (and
+    /// for at least one frame), then released to 0 so the button springs back at returnSpeed.
     /// </summary>
     private void UpdateClickPress()
     {
@@ -297,7 +354,7 @@ public class PushButton : UdonSharpBehaviour
         if (progress >= 1f)
         {
             clickPress = travelDistance;
-            clickActive = false;
+            if (!clickHeld) clickActive = false;
             return;
         }
         clickPress = travelDistance * Mathf.Max(progress, 0f);
@@ -315,10 +372,10 @@ public class PushButton : UdonSharpBehaviour
         UpdateFingertipPresses();
         UpdateClickPress();
         float localClickPress = clickIsLocal ? clickPress : 0f;
-        bool fired = UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
-        // The action can disable this button or the manager, either of which has already put the button at rest:
-        // stop here so it doesn't move again.
-        if (fired && (!enabledNow || !manager.running)) return;
+        bool acted = UpdateTrigger(Mathf.Clamp(Mathf.Max(localPress, localClickPress), 0f, travelDistance));
+        // The press or release action can disable this button or the manager, either of which has already put the
+        // button at rest: stop here so it doesn't move again.
+        if (acted && (!enabledNow || !manager.running)) return;
         UpdatePressAmount();
         ApplyPress(pressAmount);
     }
@@ -337,9 +394,11 @@ public class PushButton : UdonSharpBehaviour
     /// <summary>
     /// Snaps the button to its rest pose (rebuilt from the parent now) and clears the engagement, click and press
     /// state, so nothing is left half-pressed and a finger still inside the button has to come in from the front again.
+    /// A press whose release action hasn't fired yet gets it now, so every press gets its release.
     /// </summary>
     private void ResetToRest()
     {
+        resetCount++;
         UpdateRestWorldPose();
 
         for (int i = 0; i < fingertipEngaged.Length; i++)
@@ -351,6 +410,8 @@ public class PushButton : UdonSharpBehaviour
         debugWasInFront = false;
         clickActive = false;
         clickIsLocal = false;
+        clickHeld = false;
+        clickPresserId = -1;
         localPress = 0f;
         remotePress = 0f;
         clickPress = 0f;
@@ -361,6 +422,8 @@ public class PushButton : UdonSharpBehaviour
         // Always write here, once: the rest pose may have changed (the parent moved while the button was disabled).
         appliedPress = -1f;
         ApplyPress(0f);
+        // Last, so the button is already at rest if the release action looks at it or changes it.
+        if (releasePending) FireRelease();
     }
 
     /// <summary>
@@ -482,8 +545,9 @@ public class PushButton : UdonSharpBehaviour
 
     /// <summary>
     /// Fires the action when the local press reaches the bottom while armed, and re-arms once it rises back to
-    /// releaseFraction of the travel. Only local presses (fingertips and the local click) come through here, so
-    /// remote presses and networked clicks never fire. Returns whether it fired.
+    /// releaseFraction of the travel, firing the release action then if it hasn't fired yet (which is how fingertip
+    /// presses release). Only local presses (fingertips and the local click) come through here, so remote presses and
+    /// networked clicks never fire. Returns whether it ran the press or the release action.
     /// </summary>
     private bool UpdateTrigger(float localAmount)
     {
@@ -495,13 +559,22 @@ public class PushButton : UdonSharpBehaviour
                 armed = false;
                 // Haptics before the action, which can disable the button and so clear localPressHand.
                 if (localPress >= fireDepth) PlayPressHaptics();
+                int resets = resetCount;
                 FireAction();
+                // An action that reset the button (disabled it, or the manager) has already ended the press.
+                if (resetCount != resets) FireRelease();
+                else releasePending = true;
                 return true;
             }
         }
         else if (localAmount <= travelDistance * releaseFraction && localAmount < fireDepth)
         {
             armed = true;
+            if (releasePending)
+            {
+                FireRelease();
+                return true;
+            }
         }
         return false;
     }
@@ -522,6 +595,17 @@ public class PushButton : UdonSharpBehaviour
             return;
         }
         targetBehaviour.SendCustomEvent(eventName);
+    }
+
+    /// <summary>
+    /// Sends the release event to the target behaviour, once per fired press. An unset target or release event name
+    /// sends nothing, without a warning: the release action is optional.
+    /// </summary>
+    private void FireRelease()
+    {
+        releasePending = false;
+        if (targetBehaviour == null || string.IsNullOrEmpty(releaseEventName)) return;
+        targetBehaviour.SendCustomEvent(releaseEventName);
     }
 
     /// <summary>

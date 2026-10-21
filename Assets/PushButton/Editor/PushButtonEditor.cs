@@ -8,8 +8,9 @@ using UnityEngine;
 using VRC.Udon;
 
 /// <summary>
-/// Inspector for <see cref="PushButton"/>: the default fields, with <c>eventName</c> as a dropdown of the target's
-/// public events when the target is an UdonSharpBehaviour. Graph programs (and no target) keep a free-text field.
+/// Inspector for <see cref="PushButton"/>: the default fields, with <c>eventName</c> and <c>releaseEventName</c> as
+/// dropdowns of the target's public events when the target is an UdonSharpBehaviour (the release one with a "(none)"
+/// choice). Graph programs (and no target) keep a free-text field.
 /// Below <c>manager</c>, a warning box shows when a button isn't wired to the scene's first manager, with a Fix button
 /// that runs <see cref="PushButtonWiring.Fix"/>.
 /// </summary>
@@ -28,7 +29,8 @@ public class PushButtonEditor : Editor
         {
             enterChildren = false;
             if (property.name == "m_Script") continue;
-            if (property.name == "eventName") DrawEventName(property);
+            if (property.name == "eventName") DrawEventName(property, false);
+            else if (property.name == "releaseEventName") DrawEventName(property, true);
             else EditorGUILayout.PropertyField(property, true);
             if (property.name == "manager") fix = DrawManagerWarning();
         }
@@ -67,7 +69,8 @@ public class PushButtonEditor : Editor
         }
     }
 
-    void DrawEventName(SerializedProperty eventName)
+    // An optional event (releaseEventName) always offers "(none)", which leaves it empty.
+    void DrawEventName(SerializedProperty eventName, bool optional)
     {
         SerializedProperty targetProperty = serializedObject.FindProperty("targetBehaviour");
         string[] events = targetProperty.hasMultipleDifferentValues || eventName.hasMultipleDifferentValues
@@ -76,28 +79,31 @@ public class PushButtonEditor : Editor
         if (events == null || events.Length == 0)
         {
             EditorGUILayout.PropertyField(eventName);
-            if (events != null) EditorGUILayout.HelpBox("The target has no public parameterless methods to call.", MessageType.Warning);
+            if (events != null && !optional) EditorGUILayout.HelpBox("The target has no public parameterless methods to call.", MessageType.Warning);
             return;
         }
 
+        List<string> options = new List<string>(events);
+        List<string> labels = new List<string>(events);
+        if (optional)
+        {
+            options.Insert(0, "");
+            labels.Insert(0, "(none)");
+        }
         // An event name the target doesn't have stays selectable, marked, so it isn't silently replaced.
         string current = eventName.stringValue;
-        List<string> options = new List<string>(events);
         int index = options.IndexOf(current);
-        string[] labels = events;
         if (index < 0)
         {
             options.Insert(0, current);
-            labels = new string[options.Count];
-            labels[0] = string.IsNullOrEmpty(current) ? "(none)" : current + " (not found)";
-            events.CopyTo(labels, 1);
+            labels.Insert(0, string.IsNullOrEmpty(current) ? "(none)" : current + " (not found)");
             index = 0;
         }
 
         GUIContent label = new GUIContent(eventName.displayName, eventName.tooltip);
         Rect rect = EditorGUILayout.GetControlRect();
         label = EditorGUI.BeginProperty(rect, label, eventName);
-        int chosen = EditorGUI.Popup(rect, label, index, Array.ConvertAll(labels, l => new GUIContent(l)));
+        int chosen = EditorGUI.Popup(rect, label, index, labels.ConvertAll(l => new GUIContent(l)).ToArray());
         EditorGUI.EndProperty();
         if (chosen != index) eventName.stringValue = options[chosen];
     }

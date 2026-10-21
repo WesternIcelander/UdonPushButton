@@ -167,8 +167,8 @@ public static partial class PushButtonPlayModeTests
             actionCount = 0;
             savedClickDuration = (float)Setting("clickPressDuration");
             SetSetting("clickPressDuration", 1f);
-            if (local) button.Interact();
-            else button.SendCustomEvent("NetPlayClickAnimation");
+            if (local) Tap(button);
+            else NetTap(button);
         });
         AddStep(0.4f, () =>
         {
@@ -193,7 +193,7 @@ public static partial class PushButtonPlayModeTests
                 "clickActive " + button.GetProgramVariable("clickActive") + ", press " + button.GetProgramVariable("pressAmount"));
             CheckActionCount(name + " never fires", 0);
             SetSetting("clickPressDuration", savedClickDuration);
-            button.Interact();
+            Tap(button);
         });
         AddStep(0.6f, () =>
         {
@@ -466,7 +466,7 @@ public static partial class PushButtonPlayModeTests
         AddStep(1.5f, () =>
         {
             if (button == null || other == null) return;
-            other.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(other);
         });
         AddFireSteps(() => SetButtonOn(other, mode, false));
         AddStep(0f, () =>
@@ -557,7 +557,7 @@ public static partial class PushButtonPlayModeTests
             CheckRegistrationList(name);
             savedDuration = (float)Setting("clickPressDuration");
             SetSetting("clickPressDuration", 1f);
-            b.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(b);
             Check(name + " takes a click", (bool)b.GetProgramVariable("clickActive"), "click ignored");
         });
         AddStep(0.4f, () =>
@@ -599,8 +599,8 @@ public static partial class PushButtonPlayModeTests
             if (button == null) return;
             actionCount = 0;
             SetButtonOn(button, mode, false);
-            button.SendCustomEvent("NetPlayClickAnimation");
-            button.Interact();
+            NetTap(button);
+            Tap(button);
             Check(name + " ignored", !(bool)button.GetProgramVariable("clickActive"), "click started");
         });
         AddStep(Settle, () =>
@@ -639,7 +639,7 @@ public static partial class PushButtonPlayModeTests
             savedDuration = (float)Setting("clickPressDuration");
             SetSetting("clickPressDuration", 1f);
             PlaceDebugTip(travel * 0.5f, 0f, 0f);
-            other.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(other);
         });
         AddStep(0.4f, () =>
         {
@@ -652,8 +652,8 @@ public static partial class PushButtonPlayModeTests
             CheckAtRestCleared(name + " other button", other);
             CheckRegisteredOnce(name + " scene button stays registered", button);
             CheckRegisteredOnce(name + " other button stays registered", other);
-            button.Interact();
-            other.SendCustomEvent("NetPlayClickAnimation");
+            Tap(button);
+            NetTap(other);
             Check(name + " clicks ignored", !(bool)button.GetProgramVariable("clickActive") && !(bool)other.GetProgramVariable("clickActive"), "a click started");
             ClientSimMain.SpawnRemotePlayer(joinerName);
         });

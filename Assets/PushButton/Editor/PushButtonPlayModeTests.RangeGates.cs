@@ -109,7 +109,7 @@ public static partial class PushButtonPlayModeTests
             Check(name + " at rest before clicking", (float)button.GetProgramVariable("pressAmount") == 0f && (bool)button.GetProgramVariable("armed"), "not ready");
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
             SetSetting("clickPressDuration", 1f);
-            GameObject.Find(ButtonPath).GetComponent<ClientSimUdonHelper>().Interact();
+            TapWithHelper(GameObject.Find(ButtonPath));
         });
         AddStep(0.4f, () =>
         {

@@ -49,8 +49,8 @@ public static partial class PushButtonPlayModeTests
             for (int i = 0; i < SettingNames.Length; i++) SetSetting(SettingNames[i], TestSettings[i]);
             CheckCopies(name + " ApplySettings: scene button", button, TestSettings);
             CheckCopies(name + " ApplySettings: other button", other, TestSettings);
-            button.SendCustomEvent("NetPlayClickAnimation");
-            other.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(button);
+            NetTap(other);
             clickTime = Time.time;
         });
         AddStep(0.4f, () =>
@@ -202,7 +202,7 @@ public static partial class PushButtonPlayModeTests
             Check(name + " uses the saved settings from its first tick", firstRegisteredSettings == "",
                 firstRegisteredSettings == null ? "never registered" : firstRegisteredSettings);
             CheckCopies(name + " still has the saved settings", loadButton, TestSettings);
-            loadButton.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(loadButton);
             clickTime = Time.time;
         });
         AddStep(0.4f, () =>

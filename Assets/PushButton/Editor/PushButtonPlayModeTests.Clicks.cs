@@ -120,6 +120,7 @@ public static partial class PushButtonPlayModeTests
             SetSetting("clickPressDuration", slowClickDuration);
             Check(name + " armed and at rest before clicking", (bool)button.GetProgramVariable("armed") && (float)button.GetProgramVariable("pressAmount") == 0f, "not ready");
             helper.Interact();
+            ReleaseUse();
             clickTime = Time.time;
         });
         AddStep(0.4f, () =>
@@ -164,7 +165,7 @@ public static partial class PushButtonPlayModeTests
             Check(name + " re-armed", (bool)button.GetProgramVariable("armed"), "not armed");
             CheckActionCount(name + " no fire on the way back", 1);
             // Second click at the default speeds.
-            GameObject.Find(ButtonPath).GetComponent<ClientSimUdonHelper>().Interact();
+            TapWithHelper(GameObject.Find(ButtonPath));
         });
         AddStep(0.6f, () =>
         {
@@ -196,7 +197,7 @@ public static partial class PushButtonPlayModeTests
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
             SetSetting("clickPressDuration", slowClickDuration);
             Check(name + " armed and at rest before the event", (bool)button.GetProgramVariable("armed") && (float)button.GetProgramVariable("pressAmount") == 0f, "not ready");
-            button.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(button);
             clickTime = Time.time;
             Check(name + " starts a non-local click", (bool)button.GetProgramVariable("clickActive") && !(bool)button.GetProgramVariable("clickIsLocal"),
                 "clickActive " + button.GetProgramVariable("clickActive") + ", clickIsLocal " + button.GetProgramVariable("clickIsLocal"));
@@ -236,7 +237,7 @@ public static partial class PushButtonPlayModeTests
             Transform parent = button.transform.parent;
             Vector3 savedParentPos = parent.position;
             parent.position = savedParentPos + new Vector3(20f, 0f, 0f);
-            button.SendCustomEvent("NetPlayClickAnimation");
+            NetTap(button);
             Check(name + " out of range is ignored", !(bool)button.GetProgramVariable("clickActive"), "click started");
             parent.position = savedParentPos;
         });

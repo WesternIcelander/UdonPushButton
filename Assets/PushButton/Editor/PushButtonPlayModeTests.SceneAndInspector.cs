@@ -44,7 +44,7 @@ public static partial class PushButtonPlayModeTests
 
             actionCount = 0;
             Application.logMessageReceived += CountActionLogs;
-            go.GetComponent<ClientSimUdonHelper>().Interact();
+            TapWithHelper(go);
         });
         AddStep(1f, () =>
         {
@@ -95,6 +95,10 @@ public static partial class PushButtonPlayModeTests
                 foreach (HeaderAttribute header in field.GetCustomAttributes(typeof(HeaderAttribute), false)) headers.Add(header.header);
             }
             Check(name + " no Desktop header", !headers.Contains("Desktop"), "headers: " + string.Join(", ", headers));
+            // Plan step 8.10: releaseEventName sits under eventName in the Action group, empty by default.
+            Check(name + " releaseEventName under eventName", shown.IndexOf("releaseEventName") == shown.IndexOf("eventName") + 1
+                && HeaderOf(typeof(PushButton), "releaseEventName") == "Action", "fields: " + string.Join(", ", shown));
+            Check(name + " scene button's releaseEventName left empty", string.IsNullOrEmpty(proxy.releaseEventName), "got \"" + proxy.releaseEventName + "\"");
 
             AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
             if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
@@ -106,14 +110,16 @@ public static partial class PushButtonPlayModeTests
 
             string[] events = PushButtonEditor.GetEventNames(example);
             string listed = events != null ? string.Join(", ", events) : "null";
-            Check(name + " ButtonActionExample lists OnButtonPressed", events != null && events.Length == 1 && events[0] == "OnButtonPressed", "got " + listed);
+            Check(name + " ButtonActionExample lists OnButtonPressed and OnButtonReleased", listed == "OnButtonPressed, OnButtonReleased", "got " + listed);
             Check(name + " no target falls back to text", PushButtonEditor.GetEventNames(null) == null, "not null");
             Check(name + " non-UdonSharp program falls back to text", PushButtonEditor.GetEventNames(noProgram) == null, "not null");
 
             string[] buttonEvents = PushButtonEditor.GetEventNames(go.GetComponent<UdonBehaviour>());
             listed = buttonEvents != null ? string.Join(", ", buttonEvents) : "null";
-            Check(name + " PushButton lists its own events", buttonEvents != null && System.Array.IndexOf(buttonEvents, "NetPlayClickAnimation") >= 0, "got " + listed);
+            Check(name + " PushButton lists its own events", buttonEvents != null && System.Array.IndexOf(buttonEvents, "NetPlayClickAnimation") >= 0
+                && System.Array.IndexOf(buttonEvents, "NetReleaseClick") >= 0, "got " + listed);
             Check(name + " built-in events left out", buttonEvents != null && System.Array.IndexOf(buttonEvents, "Interact") < 0
+                && System.Array.IndexOf(buttonEvents, "InputUse") < 0 && System.Array.IndexOf(buttonEvents, "OnPlayerLeft") < 0
                 && System.Array.IndexOf(buttonEvents, "OnPlayerJoined") < 0 && System.Array.IndexOf(buttonEvents, "GetType") < 0, "got " + listed);
             Object.DestroyImmediate(holder);
         });

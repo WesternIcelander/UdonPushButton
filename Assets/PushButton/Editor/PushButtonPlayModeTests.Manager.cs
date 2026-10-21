@@ -109,8 +109,8 @@ public static partial class PushButtonPlayModeTests
             Check(name + " interact disabled", inert.DisableInteractive && !inert.IsInteractive, "DisableInteractive " + inert.DisableInteractive);
             ClientSimUdonHelper helper = noManagerButton.GetComponent<ClientSimUdonHelper>();
             Check(name + " ClientSim can't interact", helper == null || !helper.CanInteract(), "CanInteract true");
-            inert.Interact();
-            inert.SendCustomEvent("NetPlayClickAnimation");
+            Tap(inert);
+            NetTap(inert);
             PlaceDebugTip(-0.01f, 0f, 0f);
         });
         AddStep(0.3f, () =>

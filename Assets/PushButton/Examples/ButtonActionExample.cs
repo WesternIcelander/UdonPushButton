@@ -3,7 +3,8 @@ using UnityEngine;
 using VRC.SDKBase;
 
 /// <summary>
-/// Example action target for <see cref="PushButton"/>: logs who pressed it and toggles an optional object.
+/// Example action target for <see cref="PushButton"/>: logs who pressed it and toggles an optional object, and logs
+/// the release (point the button's releaseEventName at OnButtonReleased).
 /// Runs on the presser's client only; sync any shared state here if everyone should see it.
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.NoVariableSync)]
@@ -22,5 +23,12 @@ public class ButtonActionExample : UdonSharpBehaviour
         {
             toggleTarget.SetActive(!toggleTarget.activeSelf);
         }
+    }
+
+    public void OnButtonReleased()
+    {
+        VRCPlayerApi localPlayer = Networking.LocalPlayer;
+        string playerName = localPlayer != null ? localPlayer.displayName : "<no local player>";
+        Debug.Log("[ButtonActionExample] released by " + playerName);
     }
 }

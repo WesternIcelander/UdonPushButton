@@ -128,7 +128,8 @@ public static partial class PushButtonPlayModeTests
     }
 
     // Creates a ButtonActionExample target for the test (separate from the scene's own), points the button at it with
-    // OnButtonPressed, and starts counting its "[ButtonActionExample] pressed" log lines.
+    // OnButtonPressed (and OnButtonReleased as the release event, plan step 8.10), and starts counting its
+    // "[ButtonActionExample] pressed" and "released" log lines.
     static bool SetUpActionTarget(string name)
     {
         AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
@@ -143,9 +144,13 @@ public static partial class PushButtonPlayModeTests
 
         savedTarget = (UdonBehaviour)button.GetProgramVariable("targetBehaviour");
         savedEventName = (string)button.GetProgramVariable("eventName");
+        savedReleaseEventName = (string)button.GetProgramVariable("releaseEventName");
         button.SetProgramVariable("targetBehaviour", target);
         button.SetProgramVariable("eventName", "OnButtonPressed");
+        button.SetProgramVariable("releaseEventName", "OnButtonReleased");
         actionCount = 0;
+        releaseCount = 0;
+        actionOrder.Clear();
         Application.logMessageReceived += CountActionLogs;
         return true;
     }
@@ -158,6 +163,7 @@ public static partial class PushButtonPlayModeTests
         {
             button.SetProgramVariable("targetBehaviour", savedTarget);
             button.SetProgramVariable("eventName", savedEventName);
+            button.SetProgramVariable("releaseEventName", savedReleaseEventName);
         }
         if (actionTarget != null) Object.Destroy(actionTarget);
         Debug.Log("[PushButtonTest] " + name + ": " + actionCount + " action logs");
@@ -282,8 +288,15 @@ public static partial class PushButtonPlayModeTests
 
     static void CountActionLogs(string message, string stackTrace, LogType type)
     {
+        if (message.Contains("[ButtonActionExample] released"))
+        {
+            releaseCount++;
+            actionOrder.Add("released");
+            return;
+        }
         if (!message.Contains("[ButtonActionExample] pressed")) return;
         actionCount++;
+        actionOrder.Add("pressed");
         System.Action action = onAction;
         onAction = null;
         if (action != null) action();
@@ -292,6 +305,33 @@ public static partial class PushButtonPlayModeTests
     static void CheckActionCount(string name, int expected)
     {
         Check(name, actionCount == expected, "action logged " + actionCount + " times, expected " + expected);
+    }
+
+    static void CheckReleaseCount(string name, int expected)
+    {
+        Check(name, releaseCount == expected, "release logged " + releaseCount + " times, expected " + expected);
+    }
+
+    // A local click as a quick tap: Interact, then the use input released straight away.
+    static void Tap(UdonBehaviour pushButton)
+    {
+        pushButton.Interact();
+        ReleaseUse();
+    }
+
+    // The same through ClientSim's interact helper on the button, as ClientSim's own interact does.
+    static void TapWithHelper(GameObject go)
+    {
+        go.GetComponent<ClientSimUdonHelper>().Interact();
+        ReleaseUse();
+    }
+
+    // Another player's quick tap, as its two network events: the click animation, then the release right away (which
+    // lets the press-in finish first).
+    static void NetTap(UdonBehaviour pushButton)
+    {
+        pushButton.SendCustomEvent("NetPlayClickAnimation");
+        pushButton.SendCustomEvent("NetReleaseClick");
     }
 
     static void CheckWorldRestPose(string name, Vector3 restLocal)
