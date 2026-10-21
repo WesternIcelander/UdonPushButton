@@ -288,6 +288,12 @@ public static partial class PushButtonPlayModeTests
 
     static void CountActionLogs(string message, string stackTrace, LogType type)
     {
+        // Plan step 8.11's anyone events only go into the order.
+        if (message.Contains("[ButtonActionExample] anyone pressed") || message.Contains("[ButtonActionExample] anyone released"))
+        {
+            actionOrder.Add(message.Contains("anyone pressed") ? "anyone pressed" : "anyone released");
+            return;
+        }
         if (message.Contains("[ButtonActionExample] released"))
         {
             releaseCount++;

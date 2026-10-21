@@ -99,6 +99,12 @@ public static partial class PushButtonPlayModeTests
             Check(name + " releaseEventName under eventName", shown.IndexOf("releaseEventName") == shown.IndexOf("eventName") + 1
                 && HeaderOf(typeof(PushButton), "releaseEventName") == "Action", "fields: " + string.Join(", ", shown));
             Check(name + " scene button's releaseEventName left empty", string.IsNullOrEmpty(proxy.releaseEventName), "got \"" + proxy.releaseEventName + "\"");
+            // Plan step 8.11: the anyone events follow releaseEventName in the Action group, empty by default.
+            Check(name + " anyone events under releaseEventName", shown.IndexOf("anyonePressedEventName") == shown.IndexOf("releaseEventName") + 1
+                && shown.IndexOf("anyoneReleasedEventName") == shown.IndexOf("releaseEventName") + 2
+                && HeaderOf(typeof(PushButton), "anyonePressedEventName") == "Action", "fields: " + string.Join(", ", shown));
+            Check(name + " scene button's anyone events left empty", string.IsNullOrEmpty(proxy.anyonePressedEventName) && string.IsNullOrEmpty(proxy.anyoneReleasedEventName),
+                "got \"" + proxy.anyonePressedEventName + "\", \"" + proxy.anyoneReleasedEventName + "\"");
 
             AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
             if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
@@ -110,7 +116,7 @@ public static partial class PushButtonPlayModeTests
 
             string[] events = PushButtonEditor.GetEventNames(example);
             string listed = events != null ? string.Join(", ", events) : "null";
-            Check(name + " ButtonActionExample lists OnButtonPressed and OnButtonReleased", listed == "OnButtonPressed, OnButtonReleased", "got " + listed);
+            Check(name + " ButtonActionExample lists its four events", listed == "OnAnyonePressed, OnAnyoneReleased, OnButtonPressed, OnButtonReleased", "got " + listed);
             Check(name + " no target falls back to text", PushButtonEditor.GetEventNames(null) == null, "not null");
             Check(name + " non-UdonSharp program falls back to text", PushButtonEditor.GetEventNames(noProgram) == null, "not null");
 

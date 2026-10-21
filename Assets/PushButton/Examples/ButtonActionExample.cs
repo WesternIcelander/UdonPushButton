@@ -5,7 +5,8 @@ using VRC.SDKBase;
 /// <summary>
 /// Example action target for <see cref="PushButton"/>: logs who pressed it and toggles an optional object, and logs
 /// the release (point the button's releaseEventName at OnButtonReleased).
-/// Runs on the presser's client only; sync any shared state here if everyone should see it.
+/// Those run on the presser's client only; sync any shared state here if everyone should see it. OnAnyonePressed and
+/// OnAnyoneReleased (for the button's anyone events) run on every client, e.g. to play a sound.
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.NoVariableSync)]
 public class ButtonActionExample : UdonSharpBehaviour
@@ -30,5 +31,15 @@ public class ButtonActionExample : UdonSharpBehaviour
         VRCPlayerApi localPlayer = Networking.LocalPlayer;
         string playerName = localPlayer != null ? localPlayer.displayName : "<no local player>";
         Debug.Log("[ButtonActionExample] released by " + playerName);
+    }
+
+    public void OnAnyonePressed()
+    {
+        Debug.Log("[ButtonActionExample] anyone pressed");
+    }
+
+    public void OnAnyoneReleased()
+    {
+        Debug.Log("[ButtonActionExample] anyone released");
     }
 }

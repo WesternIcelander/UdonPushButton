@@ -182,6 +182,7 @@ public static partial class PushButtonPlayModeTests
         AddHapticsTest();
         AddVRTriggerTest();
         AddHoldTest();
+        AddAnyoneEventsTest();
         AddHandEarlyOutTest();
         AddBoneReadCountTest();
         AddManagerTickTest();

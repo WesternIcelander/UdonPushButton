@@ -8,7 +8,8 @@ using VRC.Udon.Common.Interfaces;
 
 /// <summary>
 /// Turns any object into a physically pushable button: VR players push it with their fingertips,
-/// desktop and mobile players click it. Only the presser's client runs the configured action.
+/// desktop and mobile players click it. Only the presser's client runs the configured action; the optional "anyone
+/// pressed" and "anyone released" events are announced by the presser and run on every client.
 /// Has no Update of its own: the scene's <see cref="PushButtonManager"/> ticks it while the local player is in range.
 /// Can be disabled and enabled at any time (its GameObject, a parent, or its UdonBehaviour): a disabled button is at
 /// rest and holds no state that could go stale.
@@ -29,6 +30,10 @@ public class PushButton : UdonSharpBehaviour
     public string eventName;
     [Tooltip("Optional. Custom event sent to the same target when the press is released. Runs on the presser's client only.")]
     public string releaseEventName;
+    [Tooltip("Optional. Custom event sent to the same target on every client when anyone's press fires, e.g. for a sound.")]
+    public string anyonePressedEventName;
+    [Tooltip("Optional. Custom event sent to the same target on every client when anyone's press is released.")]
+    public string anyoneReleasedEventName;
 
     [Header("Travel")]
     [Tooltip("Press direction in the button's local space.")]
@@ -318,6 +323,30 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
+    /// Network event from the presser whose press fired: sends anyonePressedEventName here. Like a networked click,
+    /// ignored while the button is disabled or its manager isn't running, but with no range or VR check, so the
+    /// target can decide for itself what to do with a far-away press.
+    /// </summary>
+    public void NetAnyonePressed()
+    {
+        ReceiveAnyoneEvent(anyonePressedEventName);
+    }
+
+    /// <summary>
+    /// Network event from the presser whose press was released: sends anyoneReleasedEventName here, as NetAnyonePressed.
+    /// </summary>
+    public void NetAnyoneReleased()
+    {
+        ReceiveAnyoneEvent(anyoneReleasedEventName);
+    }
+
+    private void ReceiveAnyoneEvent(string anyoneEventName)
+    {
+        if (!IsLive() || targetBehaviour == null || string.IsNullOrEmpty(anyoneEventName)) return;
+        targetBehaviour.SendCustomEvent(anyoneEventName);
+    }
+
+    /// <summary>
     /// The player ID of the network event's sender, or -1 if there is none.
     /// </summary>
     private int CallerId()
@@ -561,6 +590,7 @@ public class PushButton : UdonSharpBehaviour
                 if (localPress >= fireDepth) PlayPressHaptics();
                 int resets = resetCount;
                 FireAction();
+                AnnounceToAnyone(anyonePressedEventName, nameof(NetAnyonePressed));
                 // An action that reset the button (disabled it, or the manager) has already ended the press.
                 if (resetCount != resets) FireRelease();
                 else releasePending = true;
@@ -598,14 +628,25 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Sends the release event to the target behaviour, once per fired press. An unset target or release event name
-    /// sends nothing, without a warning: the release action is optional.
+    /// Sends the release event to the target behaviour, then announces anyone released, once per fired press. An
+    /// unset target or release event name sends nothing, without a warning: the release action is optional.
     /// </summary>
     private void FireRelease()
     {
         releasePending = false;
-        if (targetBehaviour == null || string.IsNullOrEmpty(releaseEventName)) return;
-        targetBehaviour.SendCustomEvent(releaseEventName);
+        if (targetBehaviour != null && !string.IsNullOrEmpty(releaseEventName)) targetBehaviour.SendCustomEvent(releaseEventName);
+        AnnounceToAnyone(anyoneReleasedEventName, nameof(NetAnyoneReleased));
+    }
+
+    /// <summary>
+    /// The presser's side of an anyone event: sends it to the target here, then tells every other client with
+    /// netEventName. An unset target or event name sends nothing, locally or over the network.
+    /// </summary>
+    private void AnnounceToAnyone(string anyoneEventName, string netEventName)
+    {
+        if (targetBehaviour == null || string.IsNullOrEmpty(anyoneEventName)) return;
+        targetBehaviour.SendCustomEvent(anyoneEventName);
+        SendCustomNetworkEvent(NetworkEventTarget.Others, netEventName);
     }
 
     /// <summary>

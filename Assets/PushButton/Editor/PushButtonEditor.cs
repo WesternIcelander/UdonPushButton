@@ -8,9 +8,9 @@ using UnityEngine;
 using VRC.Udon;
 
 /// <summary>
-/// Inspector for <see cref="PushButton"/>: the default fields, with <c>eventName</c> and <c>releaseEventName</c> as
-/// dropdowns of the target's public events when the target is an UdonSharpBehaviour (the release one with a "(none)"
-/// choice). Graph programs (and no target) keep a free-text field.
+/// Inspector for <see cref="PushButton"/>: the default fields, with <c>eventName</c> and the optional event names
+/// (<c>releaseEventName</c>, <c>anyonePressedEventName</c>, <c>anyoneReleasedEventName</c>) as dropdowns of the
+/// target's public events when the target is an UdonSharpBehaviour (the optional ones with a "(none)" choice). Graph programs (and no target) keep a free-text field.
 /// Below <c>manager</c>, a warning box shows when a button isn't wired to the scene's first manager, with a Fix button
 /// that runs <see cref="PushButtonWiring.Fix"/>.
 /// </summary>
@@ -30,7 +30,8 @@ public class PushButtonEditor : Editor
             enterChildren = false;
             if (property.name == "m_Script") continue;
             if (property.name == "eventName") DrawEventName(property, false);
-            else if (property.name == "releaseEventName") DrawEventName(property, true);
+            else if (property.name == "releaseEventName" || property.name == "anyonePressedEventName"
+                || property.name == "anyoneReleasedEventName") DrawEventName(property, true);
             else EditorGUILayout.PropertyField(property, true);
             if (property.name == "manager") fix = DrawManagerWarning();
         }
@@ -69,7 +70,7 @@ public class PushButtonEditor : Editor
         }
     }
 
-    // An optional event (releaseEventName) always offers "(none)", which leaves it empty.
+    // An optional event (the release and anyone events) always offers "(none)", which leaves it empty.
     void DrawEventName(SerializedProperty eventName, bool optional)
     {
         SerializedProperty targetProperty = serializedObject.FindProperty("targetBehaviour");
