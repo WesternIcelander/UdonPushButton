@@ -165,8 +165,8 @@ public static partial class PushButtonPlayModeTests
         {
             if (button == null) return;
             actionCount = 0;
-            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
-            button.SetProgramVariable("clickPressDuration", 1f);
+            savedClickDuration = (float)Setting("clickPressDuration");
+            SetSetting("clickPressDuration", 1f);
             if (local) button.Interact();
             else button.SendCustomEvent("NetPlayClickAnimation");
         });
@@ -192,7 +192,7 @@ public static partial class PushButtonPlayModeTests
             Check(name + " the click doesn't carry on", !(bool)button.GetProgramVariable("clickActive") && (float)button.GetProgramVariable("pressAmount") == 0f,
                 "clickActive " + button.GetProgramVariable("clickActive") + ", press " + button.GetProgramVariable("pressAmount"));
             CheckActionCount(name + " never fires", 0);
-            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+            SetSetting("clickPressDuration", savedClickDuration);
             button.Interact();
         });
         AddStep(0.6f, () =>
@@ -407,6 +407,7 @@ public static partial class PushButtonPlayModeTests
     {
         UdonBehaviour other = null;
         float travel = 0f;
+        float savedDuration = 0f;
         AddStep(Settle, () =>
         {
             if (button == null) return;
@@ -416,7 +417,8 @@ public static partial class PushButtonPlayModeTests
         AddStep(0.5f, () =>
         {
             if (button == null || other == null) return;
-            other.SetProgramVariable("clickPressDuration", 1f);
+            savedDuration = (float)Setting("clickPressDuration");
+            SetSetting("clickPressDuration", 1f);
             other.SetProgramVariable("targetBehaviour", null);
             CheckRegisteredOnce(name + ": other button", other);
         });
@@ -510,6 +512,7 @@ public static partial class PushButtonPlayModeTests
             if (other != null) DestroyClone(other);
             other = null;
             actionCount = 0;
+            if (savedDuration > 0f) SetSetting("clickPressDuration", savedDuration);
         });
         AddStep(Settle, () =>
         {
@@ -552,8 +555,8 @@ public static partial class PushButtonPlayModeTests
             if (button == null || b == null) return;
             CheckRegisteredOnce(name, b);
             CheckRegistrationList(name);
-            savedDuration = (float)b.GetProgramVariable("clickPressDuration");
-            b.SetProgramVariable("clickPressDuration", 1f);
+            savedDuration = (float)Setting("clickPressDuration");
+            SetSetting("clickPressDuration", 1f);
             b.SendCustomEvent("NetPlayClickAnimation");
             Check(name + " takes a click", (bool)b.GetProgramVariable("clickActive"), "click ignored");
         });
@@ -562,7 +565,7 @@ public static partial class PushButtonPlayModeTests
             UdonBehaviour b = target();
             if (button == null || b == null) return;
             Check(name + " moves", (float)b.GetProgramVariable("pressAmount") > 0f, "press " + b.GetProgramVariable("pressAmount"));
-            b.SetProgramVariable("clickPressDuration", savedDuration);
+            SetSetting("clickPressDuration", savedDuration);
         });
     }
 
@@ -621,6 +624,7 @@ public static partial class PushButtonPlayModeTests
         string joinerName = "PushButtonTest Manager Joiner " + (objectOff ? "object" : "behaviour");
         UdonBehaviour other = null;
         float travel = 0f;
+        float savedDuration = 0f;
         AddStep(Settle, () =>
         {
             if (button == null) return;
@@ -632,7 +636,8 @@ public static partial class PushButtonPlayModeTests
         AddStep(0.5f, () =>
         {
             if (button == null || other == null) return;
-            other.SetProgramVariable("clickPressDuration", 1f);
+            savedDuration = (float)Setting("clickPressDuration");
+            SetSetting("clickPressDuration", 1f);
             PlaceDebugTip(travel * 0.5f, 0f, 0f);
             other.SendCustomEvent("NetPlayClickAnimation");
         });
@@ -690,6 +695,7 @@ public static partial class PushButtonPlayModeTests
             if (button == null) return;
             if (other != null) DestroyClone(other);
             other = null;
+            if (savedDuration > 0f) SetSetting("clickPressDuration", savedDuration);
             Check(name + " released at the end", (float)button.GetProgramVariable("pressAmount") == 0f, "press " + button.GetProgramVariable("pressAmount"));
         });
     }

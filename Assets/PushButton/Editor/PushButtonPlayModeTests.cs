@@ -142,6 +142,7 @@ public static partial class PushButtonPlayModeTests
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
             StopCountingBoneReads();
+            EditorApplication.update -= WatchFirstRegistration;
         }
         if (change != PlayModeStateChange.EnteredPlayMode || !SessionState.GetBool(ArmedKey, false)) return;
         SessionState.EraseBool(ArmedKey);
@@ -175,6 +176,7 @@ public static partial class PushButtonPlayModeTests
         AddManagerTickTest();
         AddEnableDisableTest();
         AddTransformWriteTest();
+        AddSettingsTest();
         AddNoManagerTest();
         AddInspectorTest();
         AddRegressionPass(" (rotated parent)", true);

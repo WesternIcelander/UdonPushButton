@@ -115,9 +115,9 @@ public static partial class PushButtonPlayModeTests
             if (!Check(name + ": ClientSim helper", helper != null, "no ClientSimUdonHelper on " + ButtonPath)) { button = null; return; }
             if (!SetUpActionTarget(name)) { button = null; return; }
             savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
-            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
+            savedClickDuration = (float)Setting("clickPressDuration");
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
-            button.SetProgramVariable("clickPressDuration", slowClickDuration);
+            SetSetting("clickPressDuration", slowClickDuration);
             Check(name + " armed and at rest before clicking", (bool)button.GetProgramVariable("armed") && (float)button.GetProgramVariable("pressAmount") == 0f, "not ready");
             helper.Interact();
             clickTime = Time.time;
@@ -154,7 +154,7 @@ public static partial class PushButtonPlayModeTests
                 "press " + press.ToString("F5") + ", expected " + (travel - slowReturnSpeed * released).ToString("F5"));
             CheckButtonAtPress(name + " spring-back position", press);
             button.SetProgramVariable("returnSpeed", savedReturnSpeed);
-            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+            SetSetting("clickPressDuration", savedClickDuration);
         });
         AddStep(0.5f, () =>
         {
@@ -192,9 +192,9 @@ public static partial class PushButtonPlayModeTests
             if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
             if (!SetUpActionTarget(name)) { button = null; return; }
             savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
-            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
+            savedClickDuration = (float)Setting("clickPressDuration");
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
-            button.SetProgramVariable("clickPressDuration", slowClickDuration);
+            SetSetting("clickPressDuration", slowClickDuration);
             Check(name + " armed and at rest before the event", (bool)button.GetProgramVariable("armed") && (float)button.GetProgramVariable("pressAmount") == 0f, "not ready");
             button.SendCustomEvent("NetPlayClickAnimation");
             clickTime = Time.time;
@@ -223,7 +223,7 @@ public static partial class PushButtonPlayModeTests
             Check(name + " click released", !(bool)button.GetProgramVariable("clickActive"), "still active");
             Check(name + " reached the bottom and springs back", press > 0f && press < travel, "press " + press.ToString("F5"));
             button.SetProgramVariable("returnSpeed", savedReturnSpeed);
-            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+            SetSetting("clickPressDuration", savedClickDuration);
         });
         AddStep(0.5f, () =>
         {

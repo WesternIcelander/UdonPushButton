@@ -74,6 +74,35 @@ public static partial class PushButtonPlayModeTests
         return pushButton != null ? pushButton.GetProgramVariable("manager") as UdonBehaviour : null;
     }
 
+    // The scene's manager, found once (it can be inactive later, when Find no longer sees it).
+    static UdonBehaviour sceneManager;
+    static UdonBehaviour SceneManagerUdon()
+    {
+        if (sceneManager == null)
+        {
+            GameObject go = GameObject.Find(ManagerName);
+            sceneManager = go != null ? go.GetComponent<UdonBehaviour>() : null;
+        }
+        return sceneManager;
+    }
+
+    // Plan step 8.8: one of the manager's shared settings (fingertipRadius, useIndexFingers, useMiddleFingers,
+    // hapticStrength, clickPressDuration), read from the scene's manager.
+    static object Setting(string setting)
+    {
+        UdonBehaviour manager = SceneManagerUdon();
+        return manager != null ? manager.GetProgramVariable(setting) : null;
+    }
+
+    // Sets one of the shared settings on the scene's manager and pushes it to every registered button.
+    static void SetSetting(string setting, object value)
+    {
+        UdonBehaviour manager = SceneManagerUdon();
+        if (manager == null) return;
+        manager.SetProgramVariable(setting, value);
+        manager.SendCustomEvent("ApplySettings");
+    }
+
     static VRCPlayerApi FindPlayer(string displayName)
     {
         foreach (VRCPlayerApi player in VRCPlayerApi.AllPlayers)
@@ -164,23 +193,27 @@ public static partial class PushButtonPlayModeTests
         PlaceDebugTip(fraction > 0f ? travel * fraction : -0.01f, 0f, 0f);
     }
 
-    // Puts the debug fingertip (created and assigned to debugFingertip on first use) where its press would be `press`
-    // meters (negative: in front of the face), offset u and v meters from the footprint centre, in the rest frame.
+    // Puts the debug fingertip (created and assigned to the scene manager's debugFingertip on first use) where its
+    // press on `button` would be `press` meters (negative: in front of the face), offset u and v meters from the
+    // footprint centre, in the rest frame.
     static void PlaceDebugTip(float press, float u, float v)
     {
         if (button == null) return;
         if (debugTip == null)
         {
             debugTip = new GameObject("PushButtonTestFingertip");
-            button.SetProgramVariable("debugFingertip", debugTip.transform);
+            UdonBehaviour manager = SceneManagerUdon();
+            if (manager != null) manager.SetProgramVariable("debugFingertip", debugTip.transform);
         }
-        debugTip.transform.position = RestFramePoint(press, (float)button.GetProgramVariable("fingertipRadius"), u, v);
+        debugTip.transform.position = RestFramePoint(press, (float)Setting("fingertipRadius"), u, v);
     }
 
-    // Clears debugFingertip and destroys the test fingertip, so it can't press the button once the button moves.
+    // Clears the manager's debugFingertip and destroys the test fingertip, so it can't press the button once the
+    // button moves.
     static void RemoveDebugTip()
     {
-        if (button != null) button.SetProgramVariable("debugFingertip", null);
+        UdonBehaviour manager = SceneManagerUdon();
+        if (manager != null) manager.SetProgramVariable("debugFingertip", null);
         if (debugTip != null) Object.Destroy(debugTip);
         debugTip = null;
     }
@@ -226,7 +259,7 @@ public static partial class PushButtonPlayModeTests
         if (d == Vector3.zero || i == Vector3.zero) return false;
         Vector3 tip = d + (d - i) * 0.8f;
         float eyeHeight = player.GetAvatarEyeHeightAsMeters();
-        float radius = (float)button.GetProgramVariable("fingertipRadius") * (eyeHeight > 0f ? eyeHeight / 1.6f : 1f);
+        float radius = (float)Setting("fingertipRadius") * (eyeHeight > 0f ? eyeHeight / 1.6f : 1f);
         button.transform.parent.position += tip - RestFramePoint(press, radius, 0f, 0f);
         return true;
     }

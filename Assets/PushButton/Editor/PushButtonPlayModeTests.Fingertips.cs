@@ -49,15 +49,15 @@ public static partial class PushButtonPlayModeTests
             Check(name + " radius scaled by eye height", Mathf.Abs(radius - expectedRadius) < 1e-6f,
                 "got " + radius.ToString("F6") + ", expected " + expectedRadius.ToString("F6"));
 
-            button.SetProgramVariable("useIndexFingers", false);
-            button.SetProgramVariable("useMiddleFingers", true);
+            SetSetting("useIndexFingers", false);
+            SetSetting("useMiddleFingers", true);
         });
         AddStep(0.3f, () =>
         {
             if (button == null) return;
             CheckFingertips(name + " middle only", false, true);
-            button.SetProgramVariable("useIndexFingers", true);
-            button.SetProgramVariable("useMiddleFingers", false);
+            SetSetting("useIndexFingers", true);
+            SetSetting("useMiddleFingers", false);
 
             VRCPlayerApi localPlayer = Networking.LocalPlayer;
             savedPlayerPos = localPlayer.GetPosition();
@@ -561,7 +561,7 @@ public static partial class PushButtonPlayModeTests
             if (!Check(name + ": find button", button != null, "no UdonBehaviour on " + ButtonPath)) return;
             RemoveDebugTip();
             savedParentPos = button.transform.parent.position;
-            savedHapticStrength = (float)button.GetProgramVariable("hapticStrength");
+            savedHapticStrength = (float)Setting("hapticStrength");
             if (!SetUpActionTarget(name)) { button = null; return; }
             hapticCount = 0;
             VRCPlayerApi._PlayHapticEventInHand += RecordHaptic;
@@ -590,7 +590,7 @@ public static partial class PushButtonPlayModeTests
             if (button == null) return;
             CheckActionCount(name + " right press fires", 2);
             CheckHaptics(name + " right press", 2, VRC_Pickup.PickupHand.Right, savedHapticStrength);
-            button.SetProgramVariable("hapticStrength", 0f);
+            SetSetting("hapticStrength", 0f);
             MoveButtonOntoIndex(Networking.LocalPlayer, -0.02f, false);
         });
         AddStep(0.3f, () =>
@@ -603,7 +603,7 @@ public static partial class PushButtonPlayModeTests
             if (button == null) return;
             CheckActionCount(name + " strength 0 still fires", 3);
             Check(name + " strength 0 plays no pulse", hapticCount == 2, hapticCount + " pulses");
-            button.SetProgramVariable("hapticStrength", savedHapticStrength);
+            SetSetting("hapticStrength", savedHapticStrength);
             button.transform.parent.position = savedParentPos;
             PlaceDebugTip(-0.01f, 0f, 0f);
         });

@@ -10,6 +10,27 @@ using VRC.SDKBase;
 [UdonBehaviourSyncMode(BehaviourSyncMode.NoVariableSync)]
 public class PushButtonManager : UdonSharpBehaviour
 {
+    // Settings shared by every button. The manager writes them into each button whenever it registers it, and
+    // ApplySettings writes them into every registered button after a change at runtime.
+    [Header("VR")]
+    [Tooltip("Fingertip contact radius in meters, scaled by each avatar's size.")]
+    public float fingertipRadius = 0.008f;
+    [Tooltip("Index fingertips can press buttons.")]
+    public bool useIndexFingers = true;
+    [Tooltip("Middle fingertips can press buttons.")]
+    public bool useMiddleFingers = false;
+    [Tooltip("Haptic pulse strength on the local pressing hand (0 = off).")]
+    [Range(0f, 1f)]
+    public float hapticStrength = 0.3f;
+
+    [Header("Desktop")]
+    [Tooltip("Seconds for the click press-in animation.")]
+    public float clickPressDuration = 0.12f;
+
+    [Header("Debug")]
+    [Tooltip("Editor only: acts as the local player's fingertip for testing without a headset. Ignored in builds.")]
+    public Transform debugFingertip;
+
     // Player slots: a joining player takes the first free slot and a leaving player frees theirs, so slots never shift.
     // slotGenerations[i] goes up each time slot i gets a new player, so a button can tell a new player from the old one
     // and never carries a press over. Both arrays grow together when every slot is taken; null marks a free slot.
@@ -28,7 +49,7 @@ public class PushButtonManager : UdonSharpBehaviour
     public const int FingertipsPerPlayer = 4;
     // The fingertip lies this fraction of the last finger segment (intermediate -> distal) beyond the distal bone.
     private const float FingertipExtrapolation = 0.8f;
-    // Avatar eye height in meters at which a button's fingertipRadius applies unscaled; other avatars scale it in proportion.
+    // Avatar eye height in meters at which fingertipRadius applies unscaled; other avatars scale it in proportion.
     private const float ReferenceEyeHeight = 1.6f;
     // A player's finger bones are only read while one of their hand bones is within this distance of an active
     // button's contact box.
@@ -38,8 +59,7 @@ public class PushButtonManager : UdonSharpBehaviour
     // slotNear marks a valid VR player with a hand near an active button; only then are the fingertips filled in.
     // slotScale is the avatar's eye height / ReferenceEyeHeight (1 when unknown), which buttons multiply their
     // fingertipRadius by. fingertipPositions and fingertipValid hold fingertip f of slot i at i * FingertipsPerPlayer + f;
-    // a fingertip is valid only if it was estimated this frame (a finger some near button uses, on an avatar with the
-    // bones).
+    // a fingertip is valid only if it was estimated this frame (a finger the settings use, on an avatar with the bones).
     [System.NonSerialized] public bool[] slotValid = new bool[0];
     [System.NonSerialized] public bool[] slotIsLocal = new bool[0];
     [System.NonSerialized] public bool[] slotInVR = new bool[0];
@@ -67,11 +87,9 @@ public class PushButtonManager : UdonSharpBehaviour
     [System.NonSerialized] public bool running;
     // How many buttons the last Update ticked (the ones in range).
     [System.NonSerialized] public int tickedButtons;
-    // Scratch for PrepareFrame: the buttons that want fingertips this frame, with their hand check spheres and fingers.
+    // Scratch for PrepareFrame: the hand check spheres of the in-range buttons this frame.
     private Vector3[] activeCenters = new Vector3[0];
     private float[] activeRangeSqr = new float[0];
-    private bool[] activeUseIndex = new bool[0];
-    private bool[] activeUseMiddle = new bool[0];
 
     private void OnEnable()
     {
@@ -169,15 +187,42 @@ public class PushButtonManager : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Adds the button to the registered buttons and sets its registeredWithManager. Does nothing more if it is
-    /// already registered. While Update runs, the change is deferred until it's done.
+    /// Writes the settings into the button, adds it to the registered buttons and sets its registeredWithManager.
+    /// Does nothing more if it is already registered. While Update runs, the change to the list is deferred until
+    /// it's done. Buttons register on every enable, so a button disabled during a settings change catches up here.
     /// </summary>
     public void Register(PushButton button)
     {
         if (!Utilities.IsValid(button)) return;
+        PushSettings(button);
         button.registeredWithManager = true;
         if (ticking) Defer(button, true);
         else AddButton(button);
+    }
+
+    /// <summary>
+    /// Writes the current settings into every registered button (and those waiting to register), for changing them at
+    /// runtime. Disabled buttons get them when they're next enabled.
+    /// </summary>
+    public void ApplySettings()
+    {
+        for (int i = 0; i < buttonCount; i++)
+        {
+            if (Utilities.IsValid(buttons[i])) PushSettings(buttons[i]);
+        }
+        for (int i = 0; i < pendingCount; i++)
+        {
+            if (pendingRegister[i] && Utilities.IsValid(pendingButtons[i])) PushSettings(pendingButtons[i]);
+        }
+    }
+
+    private void PushSettings(PushButton button)
+    {
+        button.fingertipRadius = fingertipRadius;
+        button.useIndexFingers = useIndexFingers;
+        button.useMiddleFingers = useMiddleFingers;
+        button.hapticStrength = hapticStrength;
+        button.clickPressDuration = clickPressDuration;
     }
 
     /// <summary>
@@ -322,7 +367,8 @@ public class PushButtonManager : UdonSharpBehaviour
     /// <summary>
     /// The range gate for every registered button, against the local player (a missing local player counts as in
     /// range). A button leaving range gets its out-of-range reset once. Fills the active* scratch arrays with the
-    /// in-range buttons that use a finger and returns how many there are. Destroyed buttons are dropped.
+    /// in-range buttons (none when the settings use no finger) and returns how many there are. Destroyed buttons are
+    /// dropped.
     /// The distance is taken from the button's current position: a button out of range is at rest, and one in range
     /// is at most its travel distance from rest. Its hand check sphere is centred on its contact box at that position
     /// too, which the sphere's margin (HandEarlyOutDistance) covers.
@@ -336,9 +382,8 @@ public class PushButtonManager : UdonSharpBehaviour
         {
             activeCenters = new Vector3[buttons.Length];
             activeRangeSqr = new float[buttons.Length];
-            activeUseIndex = new bool[buttons.Length];
-            activeUseMiddle = new bool[buttons.Length];
         }
+        bool anyFinger = useIndexFingers || useMiddleFingers;
         int count = 0;
         int i = 0;
         while (i < buttonCount)
@@ -363,13 +408,9 @@ public class PushButtonManager : UdonSharpBehaviour
             }
             buttonInRange[i] = true;
             i++;
-            bool useIndex = button.useIndexFingers;
-            bool useMiddle = button.useMiddleFingers;
-            if (!useIndex && !useMiddle) continue;
+            if (!anyFinger) continue;
             activeCenters[count] = buttonTransform.TransformPoint(button.fingerCheckLocalCenter);
             activeRangeSqr[count] = button.fingerCheckRangeSqr;
-            activeUseIndex[count] = useIndex;
-            activeUseMiddle[count] = useMiddle;
             count++;
         }
         return count;
@@ -378,7 +419,7 @@ public class PushButtonManager : UdonSharpBehaviour
     /// <summary>
     /// Builds this frame's per-slot cache, before any button ticks. Hand bones are read for every VR player; finger
     /// bones only for players with a hand near one of the activeCount in-range buttons UpdateRangeGates collected,
-    /// and only for the fingers those buttons use. Bone reads therefore scale with players, not players times buttons.
+    /// and only for the fingers the settings use. Bone reads therefore scale with players, not players times buttons.
     /// </summary>
     private void PrepareFrame(int activeCount)
     {
@@ -410,24 +451,22 @@ public class PushButtonManager : UdonSharpBehaviour
             float eyeHeight = player.GetAvatarEyeHeightAsMeters();
             slotScale[s] = eyeHeight > 0f ? eyeHeight / ReferenceEyeHeight : 1f;
 
-            bool needIndex = false;
-            bool needMiddle = false;
+            bool near = false;
             for (int b = 0; b < activeCount; b++)
             {
                 if (!HandNear(left, activeCenters[b], activeRangeSqr[b]) && !HandNear(right, activeCenters[b], activeRangeSqr[b])) continue;
-                needIndex = needIndex || activeUseIndex[b];
-                needMiddle = needMiddle || activeUseMiddle[b];
-                if (needIndex && needMiddle) break;
+                near = true;
+                break;
             }
-            if (!needIndex && !needMiddle) continue;
+            if (!near) continue;
 
             slotNear[s] = true;
-            if (needIndex)
+            if (useIndexFingers)
             {
                 fingertipValid[first] = EstimateFingertip(player, first, HumanBodyBones.LeftIndexDistal, HumanBodyBones.LeftIndexIntermediate, left);
                 fingertipValid[first + 1] = EstimateFingertip(player, first + 1, HumanBodyBones.RightIndexDistal, HumanBodyBones.RightIndexIntermediate, right);
             }
-            if (needMiddle)
+            if (useMiddleFingers)
             {
                 fingertipValid[first + 2] = EstimateFingertip(player, first + 2, HumanBodyBones.LeftMiddleDistal, HumanBodyBones.LeftMiddleIntermediate, left);
                 fingertipValid[first + 3] = EstimateFingertip(player, first + 3, HumanBodyBones.RightMiddleDistal, HumanBodyBones.RightMiddleIntermediate, right);

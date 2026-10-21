@@ -76,6 +76,16 @@ public static partial class PushButtonPlayModeTests
                 "got " + (editor != null ? editor.GetType().Name : "null") + " hosting " + (userEditor != null ? userEditor.GetType().Name : "null"));
             if (editor != null) Object.DestroyImmediate(editor);
 
+            // Plan step 8.8: PushButtonEditor draws every visible serialized field, and the shared settings aren't
+            // among them any more (they're on the manager).
+            List<string> shown = new List<string>();
+            SerializedProperty property = new SerializedObject(proxy).GetIterator();
+            for (bool enter = true; property.NextVisible(enter); enter = false) shown.Add(property.name);
+            string[] moved = { "fingertipRadius", "useIndexFingers", "useMiddleFingers", "hapticStrength", "clickPressDuration", "debugFingertip" };
+            List<string> stillShown = new List<string>(moved).FindAll(shown.Contains);
+            Check(name + " moved settings not shown", stillShown.Count == 0, "still shows " + string.Join(", ", stillShown));
+            Check(name + " interactText still shown", shown.Contains("interactText"), "fields: " + string.Join(", ", shown));
+
             AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
             if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
             GameObject holder = new GameObject("PushButtonTestInspectorTarget");

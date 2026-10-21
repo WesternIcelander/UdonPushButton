@@ -35,26 +35,17 @@ public class PushButton : UdonSharpBehaviour
     [Tooltip("Spring-back speed in meters per second.")]
     public float returnSpeed = 0.1f;
 
-    [Header("VR")]
-    [Tooltip("Fingertip contact radius in meters, scaled by each avatar's size.")]
-    public float fingertipRadius = 0.008f;
-    [Tooltip("Index fingertips can press the button.")]
-    public bool useIndexFingers = true;
-    [Tooltip("Middle fingertips can press the button.")]
-    public bool useMiddleFingers = false;
-    [Tooltip("Haptic pulse strength on the local pressing hand (0 = off).")]
-    [Range(0f, 1f)]
-    public float hapticStrength = 0.3f;
-
     [Header("Desktop")]
-    [Tooltip("Seconds for the click press-in animation.")]
-    public float clickPressDuration = 0.12f;
     [Tooltip("Interact tooltip text.")]
     public string interactText = "Press";
 
-    [Header("Debug")]
-    [Tooltip("Editor only: acts as a local fingertip for testing without a headset. Ignored in builds.")]
-    public Transform debugFingertip;
+    // The manager's shared settings (see PushButtonManager), written by the manager whenever it registers this button
+    // and by its ApplySettings. The tick uses only these copies, so it never reads another behaviour's fields.
+    [System.NonSerialized] public float fingertipRadius = 0.008f;
+    [System.NonSerialized] public bool useIndexFingers = true;
+    [System.NonSerialized] public bool useMiddleFingers = false;
+    [System.NonSerialized] public float hapticStrength = 0.3f;
+    [System.NonSerialized] public float clickPressDuration = 0.12f;
 
     // Rest pose relative to the parent, captured once on the first enable. The button is always at rest while
     // disabled, so it's never captured from a pressed position.
@@ -168,11 +159,6 @@ public class PushButton : UdonSharpBehaviour
     /// </summary>
     private void Initialize()
     {
-#if !UNITY_EDITOR
-        // UdonSharp drops UNITY_EDITOR when compiling for a build, so uploaded worlds never use the debug fingertip.
-        debugFingertip = null;
-#endif
-
         restLocalPosition = transform.localPosition;
         restLocalRotation = transform.localRotation;
         UpdateRestWorldPose();
@@ -438,6 +424,9 @@ public class PushButton : UdonSharpBehaviour
             }
         }
 
+#if UNITY_EDITOR
+        // UdonSharp drops UNITY_EDITOR when compiling for a build, so uploaded worlds never read the debug fingertip.
+        Transform debugFingertip = manager.debugFingertip;
         if (debugFingertip != null)
         {
             tipEngaged = debugEngaged;
@@ -456,6 +445,7 @@ public class PushButton : UdonSharpBehaviour
             debugEngaged = false;
             debugWasInFront = false;
         }
+#endif
 
         localPress = local;
         remotePress = remote;
@@ -685,7 +675,8 @@ public class PushButton : UdonSharpBehaviour
 
     /// <summary>
     /// Editor only, in Play Mode: a wire sphere of the scaled radius at each fingertip in the manager's per-frame cache
-    /// that this button uses (only VR players with a hand near an active button have any).
+    /// that this button uses (only VR players with a hand near an active button have any). The radius and the finger
+    /// choice are the running button's copies of the manager's settings.
     /// </summary>
     private void DrawFingertipGizmos()
     {
@@ -696,13 +687,16 @@ public class PushButton : UdonSharpBehaviour
         Vector3[] tips = managerUdon.GetProgramVariable("fingertipPositions") as Vector3[];
         bool[] valid = managerUdon.GetProgramVariable("fingertipValid") as bool[];
         float[] scales = managerUdon.GetProgramVariable("slotScale") as float[];
-        if (tips == null || valid == null || scales == null) return;
+        object radius = udon.GetProgramVariable("fingertipRadius");
+        object useIndex = udon.GetProgramVariable("useIndexFingers");
+        object useMiddle = udon.GetProgramVariable("useMiddleFingers");
+        if (tips == null || valid == null || scales == null || !(radius is float) || !(useIndex is bool) || !(useMiddle is bool)) return;
         Gizmos.color = new Color(0.3f, 1f, 0.3f, 0.9f);
         for (int t = 0; t < valid.Length && t < tips.Length; t++)
         {
             int s = t / FingertipsPerPlayer;
-            bool used = t % FingertipsPerPlayer < 2 ? useIndexFingers : useMiddleFingers;
-            if (valid[t] && used && s < scales.Length) Gizmos.DrawWireSphere(tips[t], fingertipRadius * scales[s]);
+            bool used = t % FingertipsPerPlayer < 2 ? (bool)useIndex : (bool)useMiddle;
+            if (valid[t] && used && s < scales.Length) Gizmos.DrawWireSphere(tips[t], (float)radius * scales[s]);
         }
     }
 

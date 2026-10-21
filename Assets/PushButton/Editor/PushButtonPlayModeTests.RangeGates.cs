@@ -30,7 +30,7 @@ public static partial class PushButtonPlayModeTests
             if (!SetUpActionTarget(name)) { button = null; return; }
             travel = (float)button.GetProgramVariable("travelDistance");
             savedReturnSpeed = (float)button.GetProgramVariable("returnSpeed");
-            savedClickDuration = (float)button.GetProgramVariable("clickPressDuration");
+            savedClickDuration = (float)Setting("clickPressDuration");
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
             VRCPlayerApi localPlayer = Networking.LocalPlayer;
             savedPlayerPos = localPlayer.GetPosition();
@@ -108,7 +108,7 @@ public static partial class PushButtonPlayModeTests
             if (button == null) return;
             Check(name + " at rest before clicking", (float)button.GetProgramVariable("pressAmount") == 0f && (bool)button.GetProgramVariable("armed"), "not ready");
             button.SetProgramVariable("returnSpeed", slowReturnSpeed);
-            button.SetProgramVariable("clickPressDuration", 1f);
+            SetSetting("clickPressDuration", 1f);
             GameObject.Find(ButtonPath).GetComponent<ClientSimUdonHelper>().Interact();
         });
         AddStep(0.4f, () =>
@@ -128,7 +128,7 @@ public static partial class PushButtonPlayModeTests
             CheckActionCount(name + " cut-off click does not fire", 2);
             Networking.LocalPlayer.TeleportTo(savedPlayerPos, savedPlayerRot);
             button.SetProgramVariable("returnSpeed", savedReturnSpeed);
-            button.SetProgramVariable("clickPressDuration", savedClickDuration);
+            SetSetting("clickPressDuration", savedClickDuration);
         });
         AddStep(settle, () =>
         {
