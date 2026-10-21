@@ -194,6 +194,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   *Check:* Edit Mode tests (answering through the test hook, then restoring the scene): no manager + yes adds one and wires every button, including inactive ones; no manager + no changes nothing; a correctly wired scene asks nothing; a null manager, a second manager, and proxy/Udon data that disagree each count as unwired and are fixed on yes and untouched on no; two managers log the warning and use the first in hierarchy order; a scene with no buttons asks nothing. Every case returns true, so the build continues.
   Done: [notes](plan-done/8.7-add-the-build-time-check.md).
 
+- [ ] **8.8 Move the shared settings to the manager.**
+  Move `fingertipRadius`, `useIndexFingers`, `useMiddleFingers`, `hapticStrength`, `clickPressDuration` and `debugFingertip` from `PushButton` to `PushButtonManager`, keeping their defaults, tooltips and `VR` / `Desktop` / `Debug` headers (see [Inspector fields](#inspector-fields)). `interactText` stays on the button. Buttons read these from their manager each tick, so one change applies to every button. The manager reads finger bones for its own finger choice instead of the union over in-range buttons. The debug fingertip stays editor-only (the manager clears it in builds), and each button keeps its own debug engagement state, so it presses only the button it's pushed into. Remove the moved fields from the button's custom inspector. Copy the scene button's current values to the scene's manager and save the scene. Update the tests that set these fields to set them on the manager.
+  *Check:* compiles, and the full Play Mode and Edit Mode suites pass. New tests: changing `fingertipRadius`, the finger choice, `hapticStrength` or `clickPressDuration` on the manager changes how two buttons behave at once; the debug fingertip on the manager presses only the button it's in front of; the button inspector no longer shows the moved fields.
+
 ### Phase 9: Verification
 
 - [x] **9.1 Run the editor regression pass.**
@@ -301,11 +305,16 @@ A disabled button holds no state that can go stale, so turning it off and on at 
 | | `float travelDistance` | 0.019 | Meters. The stop depth and the trigger depth |
 | | `float releaseFraction` | 0.5 | The button re-arms once it rises back above this fraction of travel |
 | | `float returnSpeed` | 0.1 | m/s spring-back speed |
+| Desktop | `string interactText` | "Press" | Interact tooltip |
+
+From 8.8 these live on `PushButtonManager` and apply to every button:
+
+| Group | Field | Default | Purpose |
+|---|---|---|---|
 | VR | `float fingertipRadius` | 0.008 | Meters, scaled by each avatar's size |
 | | `bool useIndexFingers` / `useMiddleFingers` | true / false | Which fingertips can press |
 | | `float hapticStrength` | 0.3 | Haptic pulse on the local pressing hand (0 = off) |
 | Desktop | `float clickPressDuration` | 0.12 | Seconds for the click press-in animation |
-| | `string interactText` | "Press" | Interact tooltip |
 | Debug | `Transform debugFingertip` | – | Editor-only. Acts as a local fingertip for testing without a headset |
 
 ### Fingertip engagement
