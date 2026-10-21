@@ -148,7 +148,7 @@ A reusable UdonSharp component that turns any object into a physically pushable 
 
 ### Phase 8: Shared manager
 
-Moves the per-frame work out of each button into one `PushButtonManager`, makes enabling and disabling buttons safe, and adds the build-time wiring check. Steps 5.1, 5.2, 5.4, 6.1 and 6.2 move into the manager; 5.3's engagement, Phases 2–4 and 5.5 stay on the button. Every step keeps the whole Play Mode suite passing, updating older tests where the move changes how they drive the button.
+Moves the per-frame work out of each button into one `PushButtonManager`, makes enabling and disabling buttons safe, and adds the build-time wiring check. Steps 5.1, 5.2, 5.4, 6.1 and 6.2 move into the manager; 5.3's engagement, Phases 2–4 and 5.5 stay on the button. Every step keeps the whole Play Mode suite passing, updating older tests where the move changes how they drive the button. Steps 8.8–8.10 then move the shared settings to the manager and add the VR trigger option, held presses and the release action.
 
 - [x] **8.1 Add the manager and make it required.**
   Add `Assets/PushButton/PushButtonManager.cs` and its `PushButtonManager.asset` program asset (`NoVariableSync`). Give `PushButton` a `manager` field (new `Setup` Inspector group, see [Inspector fields](#inspector-fields)). Move player tracking (5.1) from the button into the manager, using stable player slots (see [Manager](#manager)). Remove `OnPlayerJoined` / `OnPlayerLeft` / `trackedPlayers` from the button. A button with no manager is inert: it logs one warning, sets `DisableInteractive = true`, never moves and never fires.
@@ -198,6 +198,16 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   Move `fingertipRadius`, `useIndexFingers`, `useMiddleFingers`, `hapticStrength`, `clickPressDuration` and `debugFingertip` from `PushButton` to `PushButtonManager`, keeping their defaults, tooltips and `VR` / `Desktop` / `Debug` headers (see [Inspector fields](#inspector-fields)). `interactText` stays on the button. To avoid cross-behaviour reads in the tick, each button keeps its own copies of `fingertipRadius`, `useIndexFingers`, `useMiddleFingers`, `hapticStrength` and `clickPressDuration` and uses only those in the tick. The manager writes them into the button whenever it registers it (every enable, through the existing registration path), rather than the button reading them in `OnEnable`: at scene load Udon delays a button's first `OnEnable` and the manager may not be initialized yet, while registration already only completes once the manager has run (8.4's `TryRegister` retry). A manager method `ApplySettings()` pushes the manager's current values to every registered button for runtime changes; disabled buttons pick them up on their next enable. The manager reads finger bones for its own finger choice instead of the union over in-range buttons. The debug fingertip stays editor-only: the button reads it from the manager inside `#if UNITY_EDITOR`, so builds have no read and no debug path at all. Each button keeps its own debug engagement state, so the tip presses only the button it's pushed into. Remove the moved fields from the button's custom inspector. Copy the scene button's current values to the scene's manager and save the scene. Update the tests that set these fields to set them on the manager.
   *Check:* compiles, and the full Play Mode and Edit Mode suites pass. New tests: changing `fingertipRadius`, the finger choice, `hapticStrength` or `clickPressDuration` on the manager and calling `ApplySettings()` changes how two buttons behave at once; a change without `ApplySettings()` reaches a button when it's next enabled; with non-default values saved on the manager, a button that's active when the scene loads uses them from its first tick; the debug fingertip on the manager presses only the button it's in front of; the button inspector no longer shows the moved fields.
 
+- [ ] **8.9 Let VR players click with the trigger (optional).**
+  Add `bool allowVRTrigger` (default false) to the manager. The manager's `Desktop` header becomes `Click`, holding `clickPressDuration` and `allowVRTrigger`. The manager pushes it to the buttons with the other settings (8.8). With it on, `SetUpLocalInput` leaves Interact enabled for VR players too, with `InteractionText = interactText`. With it off, VR players can't click, as now. A VR trigger click is exactly a desktop click: same `Interact()`, click animation, network event and action, and no haptics. `Interact()` ignores it while any fingertip (local, remote or the debug fingertip) is pushing the button in, so a hand pressing the button can't click it as well. The interactive state is re-applied whenever the manager pushes settings, so `ApplySettings()` can toggle it at runtime. On the button, move `interactText` to the top of the `Action` group, above `targetBehaviour`, and drop the `Desktop` header. Update the custom inspector to match.
+  *Check:* tests with the local player faked as VR (the 5.4 `IsUserInVR` hook): with the setting off, the button isn't interactive and `Interact()` does nothing; with it on, it's interactive with `interactText`, and `Interact()` animates, fires once and sends the network event; with it on and a fingertip holding the button partly in, `Interact()` is ignored; toggling it with `ApplySettings()` flips `DisableInteractive`; a desktop player is unaffected either way. The inspector shows `interactText` first under `Action` and has no `Desktop` header.
+
+- [ ] **8.10 Hold to keep the button pressed, with a release action.**
+  - **Holding a click.** `Interact()` starts the click as now. The button presses in over `clickPressDuration`, then stays at the bottom while the use input (left mouse, or the VR trigger from 8.9) is held. When the input is released, it springs back at `returnSpeed`. A tap shorter than `clickPressDuration` finishes pressing in, then springs straight back, as today. The input release comes from `InputUse(false)`. The manager handles `InputUse` and forwards the release to the one button the local player is holding, so buttons don't each handle every input event. First check in ClientSim that `Interact` fires on input down. If it fires on release, holding can't work this way: stop and ask.
+  - **Remote viewers.** The release sends a new `NetReleaseClick` network event to the others. A remote copy stays at the bottom until that arrives, then springs back. If it arrives before the press-in finishes, the press-in finishes first. The button records the presser with `NetworkCalling.CallingPlayer` and also releases a remote hold if that player leaves.
+  - **Release action.** Add `string releaseEventName` (blank by default, meaning nothing is called) to the button's `Action` group, under `eventName`. It's sent to the same `targetBehaviour`, on the presser's client only. It fires exactly once after each fired press action, at the first of: the click's input is released; the local press rises back to the re-arm point (`travelDistance * releaseFraction`), which is how fingertip presses release; or the button resets mid-press (disabled, manager disabled, out of range), so every press gets its release.
+  *Check:* tests (driving the input release through ClientSim or the manager's `InputUse` handler): a click held for 1 s stays at the bottom, fires the press once, and fires the release once when the input is released, then springs back; a quick tap still animates fully and fires press then release once each; a held networked click holds on the remote copy until `NetReleaseClick`, and a release that arrives early lets the press-in finish; the remote hold ends when the presser leaves; a fingertip fires the release once when it rises past the re-arm point, and not while it wobbles below it; a blank `releaseEventName` calls nothing and logs no error; disabling the button or the manager mid-hold fires the release once and leaves the button at rest; with 8.9 on, a VR trigger hold behaves like a mouse hold; release actions are never fired by remote presses.
+
 ### Phase 9: Verification
 
 - [x] **9.1 Run the editor regression pass.**
@@ -212,7 +222,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   - desktop click on A → animates on a desktop B **and** a VR B; action log only on A;
   - VR push on A → animates on a desktop B **and** a VR B; action log only on A;
   - B more than 5 m away → no animation and no errors;
-  - a button that starts disabled and is enabled after B joins → B's VR push animates it on A.
+  - a button that starts disabled and is enabled after B joins → B's VR push animates it on A;
+  - with `allowVRTrigger` on, a VR trigger click on A → animates on B; action log only on A;
+  - a held click on A (mouse and VR trigger) → stays pressed on B until released on A; press and release logs only on A;
+  - on mobile, a held tap releases when the finger lifts. If the platform never sends the release, note it and fall back to a plain tap there.
 
 - [ ] **9.4 Run the real VR test (headset).**
   Push with either index finger. Check that haptics fire, the stop is flush with no z-fighting, and there are no false presses when reaching past the button.
@@ -299,13 +312,14 @@ A disabled button holds no state that can go stale, so turning it off and on at 
 | Group | Field | Default | Purpose |
 |---|---|---|---|
 | Setup | `PushButtonManager manager` | – | Required. The scene's manager (see [Manager](#manager)) |
-| Action | `UdonBehaviour targetBehaviour` | – | Behaviour to call (works with both UdonSharp and Graph programs) |
+| Action | `string interactText` | "Press" | Interact tooltip (moved here from `Desktop` in 8.9) |
+| | `UdonBehaviour targetBehaviour` | – | Behaviour to call (works with both UdonSharp and Graph programs) |
 | | `string eventName` | – | Event passed to `SendCustomEvent`, which runs on the presser's client only |
+| | `string releaseEventName` | – | Optional (8.10). Event sent to the same target when the press is released, on the presser's client only |
 | Travel | `Vector3 localPressAxis` | (0, 0, -1) | Press direction in the button's local space |
 | | `float travelDistance` | 0.019 | Meters. The stop depth and the trigger depth |
 | | `float releaseFraction` | 0.5 | The button re-arms once it rises back above this fraction of travel |
 | | `float returnSpeed` | 0.1 | m/s spring-back speed |
-| Desktop | `string interactText` | "Press" | Interact tooltip |
 
 From 8.8 these live on `PushButtonManager` and apply to every button:
 
@@ -314,7 +328,8 @@ From 8.8 these live on `PushButtonManager` and apply to every button:
 | VR | `float fingertipRadius` | 0.008 | Meters, scaled by each avatar's size |
 | | `bool useIndexFingers` / `useMiddleFingers` | true / false | Which fingertips can press |
 | | `float hapticStrength` | 0.3 | Haptic pulse on the local pressing hand (0 = off) |
-| Desktop | `float clickPressDuration` | 0.12 | Seconds for the click press-in animation |
+| Click | `float clickPressDuration` | 0.12 | Seconds for the click press-in animation |
+| | `bool allowVRTrigger` | false | From 8.9. VR players can also click with the controller trigger |
 | Debug | `Transform debugFingertip` | – | Editor-only. Acts as a local fingertip for testing without a headset |
 
 ### Fingertip engagement
@@ -329,6 +344,7 @@ From 8.8 these live on `PushButtonManager` and apply to every button:
 - Only the local player's fingertips and the local player's own click can fire the action. Remote VR presses and networked click animations move the button but never fire.
 - Fire when the local press amount is `>= travelDistance - 0.0005` and the button is armed. Then disarm, and play haptics if in VR.
 - Re-arm when the local press amount is `<= travelDistance * releaseFraction`.
+- From 8.10, after a fire, the release action (if set) fires once at the first of: the click's input is released, the button re-arms, or the button resets mid-press.
 
 ### Risks and limitations
 
