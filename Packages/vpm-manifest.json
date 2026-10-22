@@ -8,6 +8,9 @@
     },
     "com.vrchat.core.vpm-resolver": {
       "version": "0.1.29"
+    },
+    "io.siggi.ustools": {
+      "version": "1.0.0"
     }
   },
   "locked": {
@@ -24,6 +27,12 @@
     "com.vrchat.core.vpm-resolver": {
       "version": "0.1.29",
       "dependencies": {}
+    },
+    "io.siggi.ustools": {
+      "version": "1.0.0",
+      "dependencies": {
+        "com.vrchat.worlds": "^3.10.4"
+      }
     }
   }
 }
