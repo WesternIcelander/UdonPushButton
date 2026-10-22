@@ -225,7 +225,7 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
 
 - [x] **9.2 Set up testing automation.** (Formerly 8.2.) Done: [notes](plan-done/9.2-set-up-testing-automation.md).
 
-- [ ] **9.3 Run the multi-client test (built world, 2+ clients).**
+- [ ] **9.3 Run the multi-client and VR test (built world, 2+ clients, headset).**
   Cover every cell of [Who sees what](#who-sees-what):
   - desktop click on A → animates on a desktop B **and** a VR B; action log only on A;
   - VR push on A → animates on a desktop B **and** a VR B; action log only on A;
@@ -234,10 +234,9 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   - with `allowVRTrigger` on, a VR trigger click on A → animates on B; action log only on A;
   - a held click on A (mouse and VR trigger) → stays pressed on B until released on A; press and release logs only on A;
   - with 8.11's events set, every press and release on A (finger, click, VR trigger) logs anyone pressed / anyone released once on A and once on B;
-  - on mobile, a held tap releases when the finger lifts. If the platform never sends the release, note it and fall back to a plain tap there.
-
-- [ ] **9.4 Run the real VR test (headset).**
-  Push with either index finger. Check that haptics fire, the stop is flush with no z-fighting, and there are no false presses when reaching past the button.
+  - on mobile, a held tap releases when the finger lifts. If the platform never sends the release, note it and fall back to a plain tap there;
+  - in VR, a push with either index finger fires haptics;
+  - in VR, reaching past the button causes no false presses.
 
 ---
 
