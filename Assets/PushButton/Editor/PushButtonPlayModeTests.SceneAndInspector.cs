@@ -41,6 +41,7 @@ public static partial class PushButtonPlayModeTests
             UdonBehaviour manager = ManagerOf(button);
             Check(name + " wired to the scene's manager", manager != null && manager.gameObject.name == ManagerName && manager.transform.parent == null,
                 manager == null ? "no manager" : "got " + manager.gameObject.name);
+            CheckDemoWiring(name, button, target);
 
             actionCount = 0;
             Application.logMessageReceived += CountActionLogs;
@@ -54,6 +55,38 @@ public static partial class PushButtonPlayModeTests
             CheckActionCount(name + " desktop click logs once", 1);
             Check(name + " back at rest", (float)button.GetProgramVariable("pressAmount") == 0f, "still pressed");
         });
+    }
+
+    // Plan step 9.3: the demo scene shows every feature. The button has its release and anyone events, the manager has
+    // allowVRTrigger on, and the example enables the inactive PushButtonAssembly 2 (a button that starts disabled).
+    // Then this resets those to the defaults the other tests expect: no release or anyone events, allowVRTrigger off,
+    // and no toggle target, so clicks don't switch on a second button.
+    static void CheckDemoWiring(string name, UdonBehaviour pushButton, UdonBehaviour example)
+    {
+        Check(name + " release event OnButtonReleased", (string)pushButton.GetProgramVariable("releaseEventName") == "OnButtonReleased",
+            "got \"" + pushButton.GetProgramVariable("releaseEventName") + "\"");
+        Check(name + " anyone events", (string)pushButton.GetProgramVariable("anyonePressedEventName") == "OnAnyonePressed"
+            && (string)pushButton.GetProgramVariable("anyoneReleasedEventName") == "OnAnyoneReleased",
+            "got \"" + pushButton.GetProgramVariable("anyonePressedEventName") + "\", \"" + pushButton.GetProgramVariable("anyoneReleasedEventName") + "\"");
+        Check(name + " allowVRTrigger on", true.Equals(Setting("allowVRTrigger")), "off");
+
+        GameObject second = example != null ? example.GetProgramVariable("toggleTarget") as GameObject : null;
+        if (Check(name + " toggles " + AssemblyName + " 2", second != null && second.name == AssemblyName + " 2",
+            second == null ? "no toggle target" : "got " + second.name))
+        {
+            Check(name + " second button starts disabled", !second.activeSelf, "active");
+            Transform child = second.transform.Find("Button");
+            UdonBehaviour secondButton = child != null ? child.GetComponent<UdonBehaviour>() : null;
+            UdonBehaviour secondTarget = secondButton != null ? (UdonBehaviour)secondButton.GetProgramVariable("targetBehaviour") : null;
+            Check(name + " second button wired to its own example and the manager", secondTarget != null && secondTarget.gameObject == second
+                && ManagerOf(secondButton) == ManagerOf(pushButton), secondButton == null ? "no button" : "target " + (secondTarget != null ? secondTarget.gameObject.name : "none"));
+        }
+
+        pushButton.SetProgramVariable("releaseEventName", "");
+        pushButton.SetProgramVariable("anyonePressedEventName", "");
+        pushButton.SetProgramVariable("anyoneReleasedEventName", "");
+        SetSetting("allowVRTrigger", false);
+        if (example != null) example.SetProgramVariable("toggleTarget", null);
     }
 
     // Plan step 7.1: PushButton's inspector is PushButtonEditor, and its event dropdown lists an UdonSharp target's
@@ -95,16 +128,14 @@ public static partial class PushButtonPlayModeTests
                 foreach (HeaderAttribute header in field.GetCustomAttributes(typeof(HeaderAttribute), false)) headers.Add(header.header);
             }
             Check(name + " no Desktop header", !headers.Contains("Desktop"), "headers: " + string.Join(", ", headers));
-            // Plan step 8.10: releaseEventName sits under eventName in the Action group, empty by default.
+            // Plan step 8.10: releaseEventName sits under eventName in the Action group (the scene's values are checked
+            // by the scene wiring test, 9.3).
             Check(name + " releaseEventName under eventName", shown.IndexOf("releaseEventName") == shown.IndexOf("eventName") + 1
                 && HeaderOf(typeof(PushButton), "releaseEventName") == "Action", "fields: " + string.Join(", ", shown));
-            Check(name + " scene button's releaseEventName left empty", string.IsNullOrEmpty(proxy.releaseEventName), "got \"" + proxy.releaseEventName + "\"");
-            // Plan step 8.11: the anyone events follow releaseEventName in the Action group, empty by default.
+            // Plan step 8.11: the anyone events follow releaseEventName in the Action group.
             Check(name + " anyone events under releaseEventName", shown.IndexOf("anyonePressedEventName") == shown.IndexOf("releaseEventName") + 1
                 && shown.IndexOf("anyoneReleasedEventName") == shown.IndexOf("releaseEventName") + 2
                 && HeaderOf(typeof(PushButton), "anyonePressedEventName") == "Action", "fields: " + string.Join(", ", shown));
-            Check(name + " scene button's anyone events left empty", string.IsNullOrEmpty(proxy.anyonePressedEventName) && string.IsNullOrEmpty(proxy.anyoneReleasedEventName),
-                "got \"" + proxy.anyonePressedEventName + "\", \"" + proxy.anyoneReleasedEventName + "\"");
 
             AbstractUdonProgramSource program = AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(ExampleProgramPath);
             if (!Check(name + ": load ButtonActionExample program", program != null, "no program asset")) return;
