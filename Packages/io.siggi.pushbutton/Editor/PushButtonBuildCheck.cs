@@ -16,12 +16,19 @@ public class PushButtonBuildCheck : IVRCSDKBuildRequestedCallback
 
     public int callbackOrder => 0;
 
-    // Answers the build check's question instead of the dialog while set (tests only).
-    internal static Func<string, bool> testAnswer;
+    readonly Func<string, bool> ask;
+
+    public PushButtonBuildCheck() : this(AskWithDialog) { }
+
+    // Answers the build check's question with ask instead of the dialog (tests).
+    internal PushButtonBuildCheck(Func<string, bool> ask)
+    {
+        this.ask = ask;
+    }
 
     public bool OnBuildRequested(VRCSDKRequestedBuildType requestedBuildType)
     {
-        if (requestedBuildType == VRCSDKRequestedBuildType.Scene) Run(testAnswer ?? AskWithDialog);
+        if (requestedBuildType == VRCSDKRequestedBuildType.Scene) Run(ask);
         return true;
     }
 

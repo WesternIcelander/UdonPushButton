@@ -12,8 +12,8 @@ using Object = UnityEngine.Object;
 /// <summary>
 /// Edit Mode checks for <see cref="PushButtonBuildCheck"/> (plan step 8.7), run unattended through the editor trigger:
 /// queue `save`, then `menu Tools/PushButton/Run Build Check Tests`, and read the Editor log. Each case builds its own
-/// scene in a temporary scene file, calls the build callback with <see cref="PushButtonBuildCheck.testAnswer"/>
-/// answering, and checks what changed. The open scenes are restored afterwards. Logs
+/// scene in a temporary scene file, calls the build callback with a test answer in place of the dialog, and checks
+/// what changed. The open scenes are restored afterwards. Logs
 /// `[PushButtonBuildCheckTest] FAIL name: reason` as errors and one `[PushButtonBuildCheckTest] done: N passed, M failed`
 /// line.
 /// </summary>
@@ -67,7 +67,6 @@ public static class PushButtonBuildCheckTests
         finally
         {
             Application.logMessageReceived -= RecordWarning;
-            PushButtonBuildCheck.testAnswer = null;
             EditorSceneManager.RestoreSceneManagerSetup(setup);
             AssetDatabase.DeleteAsset(ScenePath);
         }
@@ -204,13 +203,12 @@ public static class PushButtonBuildCheckTests
     {
         asked = 0;
         warnings.Clear();
-        PushButtonBuildCheck.testAnswer = question =>
+        Func<string, bool> answer = question =>
         {
             asked++;
             return yes;
         };
-        bool goOn = new PushButtonBuildCheck().OnBuildRequested(VRCSDKRequestedBuildType.Scene);
-        PushButtonBuildCheck.testAnswer = null;
+        bool goOn = new PushButtonBuildCheck(answer).OnBuildRequested(VRCSDKRequestedBuildType.Scene);
         Check(name + " lets the build continue", goOn, "returned false");
     }
 

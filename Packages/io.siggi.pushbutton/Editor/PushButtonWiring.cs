@@ -7,8 +7,8 @@ using UnityEngine.SceneManagement;
 using VRC.Udon;
 
 /// <summary>
-/// Shared code for wiring buttons to the scene's <see cref="PushButtonManager"/>: used by the inspector's Fix button,
-/// <see cref="PushButtonBuildCheck"/> and Tools/PushButton/Wire Up Scene. A button is wired only if its <c>manager</c> is exactly the first manager in
+/// Shared code for wiring buttons to the scene's <see cref="PushButtonManager"/>: used by the inspector's Fix button
+/// and <see cref="PushButtonBuildCheck"/>. A button is wired only if its <c>manager</c> is exactly the first manager in
 /// hierarchy order, in both the UdonSharp proxy and the UdonBehaviour's data.
 /// </summary>
 public static class PushButtonWiring

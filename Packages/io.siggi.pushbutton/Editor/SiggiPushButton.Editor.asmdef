@@ -1,0 +1,15 @@
+{
+	"name": "SiggiPushButton.Editor",
+	"references": [
+		"SiggiPushButton",
+		"VRC.SDKBase",
+		"VRC.SDKBase.Editor.BuildPipeline",
+		"VRC.SDK3",
+		"VRC.Udon",
+		"UdonSharp.Runtime",
+		"UdonSharp.Editor"
+	],
+	"includePlatforms": [
+		"Editor"
+	]
+}

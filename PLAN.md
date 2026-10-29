@@ -248,9 +248,10 @@ Move the production files into the local package `Packages/io.siggi.pushbutton/`
   *Check:* compiles. The scene's buttons and manager keep their programs and Inspector values.
   Done: [notes](plan-done/10.1-add-the-runtime-assembly.md).
 
-- [ ] **10.2 Add the editor assembly.**
+- [x] **10.2 Add the editor assembly.**
   Move `PushButtonEditor.cs`, `PushButtonBuildCheck.cs` and `PushButtonWiring.cs` into `Packages/io.siggi.pushbutton/Editor/`, with an editor-only `SiggiPushButton.Editor` asmdef (references `SiggiPushButton`, `UdonSharp.Editor`, `VRC.SDKBase.Editor.BuildPipeline` and what else it needs). Keep the `Check Manager Wiring` and `Fix Manager Wiring` menu items. Remove test-only hooks from production code where possible. Where tests still need `internal` members (`testAnswer`, `WiringWarning`, `GetEventNames`), add `InternalsVisibleTo` for the test assembly.
   *Check:* compiles. The custom inspector shows. The build check still runs before an upload.
+  Done: [notes](plan-done/10.2-add-the-editor-assembly.md).
 
 - [ ] **10.3 Move the example into the sample.**
   Move `ButtonActionExample.cs` and its program asset into `Example~/`, and add a small example scene there: one button with its manager, wired to `ButtonActionExample`. The `Example` link lets this project compile and open it in place. Make sure the sample compiles both through the link here and when imported into `Assets/Samples/` in another project (no duplicate types, correct assembly).
