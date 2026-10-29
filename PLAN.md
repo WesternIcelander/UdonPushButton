@@ -239,6 +239,30 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
   - in VR, reaching past the button causes no false presses.
   Done: [notes](plan-done/9.3-run-the-multi-client-and-vr-test.md).
 
+### Phase 10: Package
+
+Move the production files into the local package `Packages/io.siggi.pushbutton/` (`package.json` and the `Example` → `Example~` link already exist), so other worlds can install it. Tests and test-only tools stay in `Assets/`. Follow `io.siggi.ustools` for the layout. Move each file **with its `.meta`** (through Unity or `git mv` of both), so GUIDs and scene references stay the same.
+
+- [ ] **10.1 Add the runtime assembly.**
+  Add `Packages/io.siggi.pushbutton/Runtime/` holding `PushButton.cs`, `PushButtonManager.cs` and their program assets. Add the `SiggiPushButton` asmdef (references `VRC.SDKBase`, `VRC.SDK3`, `VRC.Udon`, `UdonSharp.Runtime`) and its UdonSharp assembly definition asset, like `SiggiUSTools.asmdef` / `SiggiUSTools.asset`.
+  *Check:* compiles. The scene's buttons and manager keep their programs and Inspector values.
+
+- [ ] **10.2 Add the editor assembly.**
+  Move `PushButtonEditor.cs`, `PushButtonBuildCheck.cs` and `PushButtonWiring.cs` into `Packages/io.siggi.pushbutton/Editor/`, with an editor-only `SiggiPushButton.Editor` asmdef (references `SiggiPushButton`, `UdonSharp.Editor`, `VRC.SDKBase.Editor.BuildPipeline` and what else it needs). Keep the `Check Manager Wiring` and `Fix Manager Wiring` menu items. Remove test-only hooks from production code where possible. Where tests still need `internal` members (`testAnswer`, `WiringWarning`, `GetEventNames`), add `InternalsVisibleTo` for the test assembly.
+  *Check:* compiles. The custom inspector shows. The build check still runs before an upload.
+
+- [ ] **10.3 Move the example into the sample.**
+  Move `ButtonActionExample.cs` and its program asset into `Example~/`, and add a small example scene there: one button with its manager, wired to `ButtonActionExample`. The `Example` link lets this project compile and open it in place. Make sure the sample compiles both through the link here and when imported into `Assets/Samples/` in another project (no duplicate types, correct assembly).
+  *Check:* compiles. The example scene opens and a ClientSim click logs `[ButtonActionExample] pressed`.
+
+- [ ] **10.4 Move the tests into their own assembly.**
+  Move the Play Mode and build-check tests and their menu items (`Run Tests On Next Play`, `Wire Up Scene`, `Run Build Check Tests`) to `Assets/PushButtonTests/Editor/`, with an editor-only asmdef referencing both package assemblies. Update the hard-coded asset paths (`ButtonProgramPath`, `ExampleProgramPath`) and the paths in `TestingAutomation.md`. Remove the empty `Assets/PushButton/`.
+  *Check:* the full Play Mode run and the build-check tests pass with the same counts as before.
+
+- [ ] **10.5 Check the package from outside.**
+  Make sure the package folder holds only production files and the sample. Check `package.json` (version, `vpmDependencies`, samples path) and whether the `Example` link should ship or be excluded from the package. Install the package into a clean VRChat world project, import the sample and press the button in ClientSim.
+  *Check:* the clean project compiles with no errors, and the sample button works.
+
 ---
 
 ## Design reference
