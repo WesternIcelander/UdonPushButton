@@ -258,9 +258,10 @@ Move the production files into the local package `Packages/io.siggi.pushbutton/`
   *Check:* compiles. The example scene opens and a ClientSim click logs `[ButtonActionExample] pressed`.
   Done: [notes](plan-done/10.3-move-the-example-into-the-sample.md).
 
-- [ ] **10.4 Move the tests into their own assembly.**
+- [x] **10.4 Move the tests into their own assembly.**
   Move the Play Mode and build-check tests and their menu items (`Run Tests On Next Play`, `Wire Up Scene`, `Run Build Check Tests`) to `Assets/PushButtonTests/Editor/`, with an editor-only asmdef referencing both package assemblies. Update the hard-coded asset paths (`ButtonProgramPath`, `ExampleProgramPath`) and the paths in `TestingAutomation.md`. Remove the empty `Assets/PushButton/`.
   *Check:* the full Play Mode run and the build-check tests pass with the same counts as before.
+  Done: [notes](plan-done/10.4-move-the-tests-into-their-own-assembly.md).
 
 - [ ] **10.5 Check the package from outside.**
   Make sure the package folder holds only production files and the sample. Check `package.json` (version, `vpmDependencies`, samples path). The `Example` link is local only (it's in `.git/info/exclude`), so it doesn't ship. Install the package into a clean VRChat world project, import the sample and press the button in ClientSim.
