@@ -1144,7 +1144,7 @@ MonoBehaviour:
       Data: 69|System.RuntimeType, mscorlib
     - Name: 
       Entry: 1
-      Data: PushButton[], Assembly-CSharp
+      Data: PushButton[], SiggiPushButton
     - Name: 
       Entry: 8
       Data: 

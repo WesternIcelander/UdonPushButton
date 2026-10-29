@@ -217,6 +217,12 @@
         "com.unity.ai.navigation": "1.1.5"
       }
     },
+    "io.siggi.pushbutton": {
+      "version": "file:io.siggi.pushbutton",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "io.siggi.ustools": {
       "version": "file:io.siggi.ustools",
       "depth": 0,

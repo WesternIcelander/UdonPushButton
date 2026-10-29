@@ -243,9 +243,10 @@ Moves the per-frame work out of each button into one `PushButtonManager`, makes 
 
 Move the production files into the local package `Packages/io.siggi.pushbutton/` (`package.json` and the `Example` → `Example~` link already exist), so other worlds can install it. Tests and test-only tools stay in `Assets/`. Follow `io.siggi.ustools` for the layout. Move each file **with its `.meta`** (through Unity or `git mv` of both), so GUIDs and scene references stay the same.
 
-- [ ] **10.1 Add the runtime assembly.**
+- [x] **10.1 Add the runtime assembly.**
   Add `Packages/io.siggi.pushbutton/Runtime/` holding `PushButton.cs`, `PushButtonManager.cs` and their program assets. Add the `SiggiPushButton` asmdef (references `VRC.SDKBase`, `VRC.SDK3`, `VRC.Udon`, `UdonSharp.Runtime`) and its UdonSharp assembly definition asset, like `SiggiUSTools.asmdef` / `SiggiUSTools.asset`.
   *Check:* compiles. The scene's buttons and manager keep their programs and Inspector values.
+  Done: [notes](plan-done/10.1-add-the-runtime-assembly.md).
 
 - [ ] **10.2 Add the editor assembly.**
   Move `PushButtonEditor.cs`, `PushButtonBuildCheck.cs` and `PushButtonWiring.cs` into `Packages/io.siggi.pushbutton/Editor/`, with an editor-only `SiggiPushButton.Editor` asmdef (references `SiggiPushButton`, `UdonSharp.Editor`, `VRC.SDKBase.Editor.BuildPipeline` and what else it needs). Keep the `Check Manager Wiring` and `Fix Manager Wiring` menu items. Remove test-only hooks from production code where possible. Where tests still need `internal` members (`testAnswer`, `WiringWarning`, `GetEventNames`), add `InternalsVisibleTo` for the test assembly.

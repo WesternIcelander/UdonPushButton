@@ -1,0 +1,24 @@
+{
+  "name": "io.siggi.pushbutton",
+  "version": "1.0.0-snapshot",
+  "displayName": "Push Button",
+  "description": "A button you can push, or click.",
+  "hideInEditor": false,
+  "unity": "2022.3",
+  "unityRelease": "22f1",
+  "license": "MIT",
+  "vpmDependencies": {
+    "com.vrchat.worlds": "^3.10.4"
+  },
+  "author": {
+    "name": "Sigurður Jón",
+    "email": "hey@siggi.io"
+  },
+  "samples": [
+    {
+      "displayName": "Push Button Example",
+      "description": "An example scene containing a push button.",
+      "path": "Example~"
+    }
+  ]
+}

@@ -22,7 +22,7 @@ public static partial class PushButtonPlayModeTests
     const string ButtonPath = AssemblyName + "/Button";
     const string ManagerName = "PushButtonManager";
     const string NoManagerName = "PushButtonTestNoManager";
-    const string ButtonProgramPath = "Assets/PushButton/PushButton.asset";
+    const string ButtonProgramPath = "Packages/io.siggi.pushbutton/Runtime/PushButton.asset";
     const string ExampleProgramPath = "Assets/PushButton/Examples/ButtonActionExample.asset";
     const float Tolerance = 0.0001f;
 
