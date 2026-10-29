@@ -253,9 +253,10 @@ Move the production files into the local package `Packages/io.siggi.pushbutton/`
   *Check:* compiles. The custom inspector shows. The build check still runs before an upload.
   Done: [notes](plan-done/10.2-add-the-editor-assembly.md).
 
-- [ ] **10.3 Move the example into the sample.**
+- [x] **10.3 Move the example into the sample.**
   Move `ButtonActionExample.cs` and its program asset into `Example~/`, and add a small example scene there: one button with its manager, wired to `ButtonActionExample`. The `Example` link lets this project compile and open it in place. Make sure the sample compiles both through the link here and when imported into `Assets/Samples/` in another project (no duplicate types, correct assembly).
   *Check:* compiles. The example scene opens and a ClientSim click logs `[ButtonActionExample] pressed`.
+  Done: [notes](plan-done/10.3-move-the-example-into-the-sample.md).
 
 - [ ] **10.4 Move the tests into their own assembly.**
   Move the Play Mode and build-check tests and their menu items (`Run Tests On Next Play`, `Wire Up Scene`, `Run Build Check Tests`) to `Assets/PushButtonTests/Editor/`, with an editor-only asmdef referencing both package assemblies. Update the hard-coded asset paths (`ButtonProgramPath`, `ExampleProgramPath`) and the paths in `TestingAutomation.md`. Remove the empty `Assets/PushButton/`.

@@ -23,7 +23,7 @@ public static partial class PushButtonPlayModeTests
     const string ManagerName = "PushButtonManager";
     const string NoManagerName = "PushButtonTestNoManager";
     const string ButtonProgramPath = "Packages/io.siggi.pushbutton/Runtime/PushButton.asset";
-    const string ExampleProgramPath = "Assets/PushButton/Examples/ButtonActionExample.asset";
+    const string ExampleProgramPath = "Packages/io.siggi.pushbutton/Example/ButtonActionExample.asset";
     const float Tolerance = 0.0001f;
 
     // A test is a list of steps, each run once after its delay (seconds since the previous step).

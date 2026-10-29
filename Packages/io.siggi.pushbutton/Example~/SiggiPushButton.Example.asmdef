@@ -1,0 +1,9 @@
+{
+	"name": "SiggiPushButton.Example",
+	"references": [
+		"VRC.SDKBase",
+		"VRC.SDK3",
+		"VRC.Udon",
+		"UdonSharp.Runtime"
+	]
+}
