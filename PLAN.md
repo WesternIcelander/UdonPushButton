@@ -260,7 +260,7 @@ Move the production files into the local package `Packages/io.siggi.pushbutton/`
   *Check:* the full Play Mode run and the build-check tests pass with the same counts as before.
 
 - [ ] **10.5 Check the package from outside.**
-  Make sure the package folder holds only production files and the sample. Check `package.json` (version, `vpmDependencies`, samples path) and whether the `Example` link should ship or be excluded from the package. Install the package into a clean VRChat world project, import the sample and press the button in ClientSim.
+  Make sure the package folder holds only production files and the sample. Check `package.json` (version, `vpmDependencies`, samples path). The `Example` link is local only (it's in `.git/info/exclude`), so it doesn't ship. Install the package into a clean VRChat world project, import the sample and press the button in ClientSim.
   *Check:* the clean project compiles with no errors, and the sample button works.
 
 ---
