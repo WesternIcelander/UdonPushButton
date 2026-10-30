@@ -4,6 +4,7 @@
 		"VRC.SDKBase",
 		"VRC.SDK3",
 		"VRC.Udon",
-		"UdonSharp.Runtime"
+		"UdonSharp.Runtime",
+		"SiggiUSTools"
 	]
 }

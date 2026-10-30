@@ -10,7 +10,8 @@
 		"VRC.Udon",
 		"VRC.ClientSim",
 		"UdonSharp.Runtime",
-		"UdonSharp.Editor"
+		"UdonSharp.Editor",
+		"SiggiUSTools"
 	],
 	"includePlatforms": [
 		"Editor"

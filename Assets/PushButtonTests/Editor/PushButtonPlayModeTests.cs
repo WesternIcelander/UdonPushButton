@@ -146,6 +146,7 @@ public static partial class PushButtonPlayModeTests
             Application.logMessageReceived -= CountActionLogs;
             Application.logMessageReceived -= CountNoManagerWarnings;
             Application.logMessageReceived -= CountErrors;
+            Application.logMessageReceived -= RecordI18nLogs;
             onAction = null;
             VRCPlayerApi._PlayHapticEventInHand -= RecordHaptic;
             RestoreIsUserInVR();
@@ -189,6 +190,7 @@ public static partial class PushButtonPlayModeTests
         AddEnableDisableTest();
         AddTransformWriteTest();
         AddSettingsTest();
+        AddI18nTest();
         AddNoManagerTest();
         AddInspectorTest();
         AddRegressionPass(" (rotated parent)", true);

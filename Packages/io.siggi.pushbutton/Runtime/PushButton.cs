@@ -20,9 +20,11 @@ public class PushButton : UdonSharpBehaviour
     [Header("Setup")]
     [Tooltip("Required. The scene's PushButtonManager. Without one the button does nothing.")]
     public PushButtonManager manager;
+    [Tooltip("Optional. Translates the interact text, which is then an I18n key.")]
+    public SiggiUSTools.I18n i18n;
 
     [Header("Action")]
-    [Tooltip("Interact tooltip text, shown to desktop and mobile players (and VR players when the manager allows the trigger).")]
+    [Tooltip("Interact tooltip text, shown to desktop and mobile players (and VR players when the manager allows the trigger). With an I18n set, this is its key.")]
     public string interactText = "Press";
     [Tooltip("Behaviour to call when the button is pressed (UdonSharp or Graph program).")]
     public UdonBehaviour targetBehaviour;
@@ -130,6 +132,10 @@ public class PushButton : UdonSharpBehaviour
     // Set by the manager: whether the button is in its list of buttons (or will be once the manager's current tick
     // ends). Udon drops calls to a manager it hasn't started yet, which leaves this false.
     [System.NonSerialized] public bool registeredWithManager;
+    // Whether i18n has this button as a language change listener. It stays that way: I18n can't remove a listener.
+    private bool i18nListening;
+    // Whether the warning about an I18n that can't answer has been logged.
+    private bool i18nWarned;
     // Engagement state of the debug fingertip, which isn't a tracked player's slot.
     private bool debugEngaged;
     private bool debugWasInFront;
@@ -156,6 +162,7 @@ public class PushButton : UdonSharpBehaviour
         enabledNow = true;
         ResetToRest();
         TryRegister();
+        TryListenToI18n();
     }
 
     /// <summary>
@@ -204,6 +211,47 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
+    /// Starts listening to i18n, once. Udon drops calls to a behaviour it hasn't started yet, and a dropped call returns
+    /// null, so GetCurrentLanguage (which every pack can answer) shows whether the I18n is there yet. A dropped call is
+    /// retried on the next frame, unless the I18n is switched off and won't start by itself: then the interact text
+    /// stays as it is, and the button's next enable tries again.
+    /// </summary>
+    private void TryListenToI18n()
+    {
+        if (i18nListening || !Utilities.IsValid(i18n)) return;
+        if (i18n.GetCurrentLanguage() == null)
+        {
+            if (i18n.gameObject.activeInHierarchy && i18n.enabled)
+            {
+                SendCustomEventDelayedFrames(nameof(_RetryListenToI18n), 1);
+            }
+            else if (!i18nWarned)
+            {
+                i18nWarned = true;
+                Debug.LogWarning("[PushButton] " + name + ": the I18n is switched off and hasn't started, so the interact text isn't translated");
+            }
+            return;
+        }
+        i18n.AddLanguageChangeListener(this);
+        i18nListening = true;
+        _UpdateInteractive();
+    }
+
+    public void _RetryListenToI18n()
+    {
+        if (enabledNow) TryListenToI18n();
+    }
+
+    /// <summary>
+    /// Sent by I18n when the language changes. Udon delivers it to disabled buttons too, so a button disabled during a
+    /// change has the new text when it comes back.
+    /// </summary>
+    public void OnLanguageChange()
+    {
+        _UpdateInteractive();
+    }
+
+    /// <summary>
     /// Whether the button can be pressed now: enabled, registered and its manager running. Clicks and networked
     /// clicks that arrive otherwise are ignored (Udon delivers events to disabled behaviours too).
     /// </summary>
@@ -227,6 +275,8 @@ public class PushButton : UdonSharpBehaviour
     /// Desktop and mobile players (or no local player at all) click the button. VR players press with their fingers,
     /// so Interact is disabled for them unless the manager's allowVRTrigger is on. A button with no manager can't be
     /// clicked at all. Called by the manager whenever it pushes its settings, so ApplySettings can toggle it at runtime.
+    /// The text is interactText, read through i18n once the button listens to it. A null or empty interactText never
+    /// reads I18n, which would log a missing key.
     /// </summary>
     public void _UpdateInteractive()
     {
@@ -238,7 +288,7 @@ public class PushButton : UdonSharpBehaviour
             return;
         }
         DisableInteractive = false;
-        InteractionText = interactText;
+        InteractionText = i18nListening && !string.IsNullOrEmpty(interactText) && Utilities.IsValid(i18n) ? i18n._(interactText) : interactText;
     }
 
     /// <summary>

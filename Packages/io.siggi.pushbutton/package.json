@@ -8,7 +8,8 @@
   "unityRelease": "22f1",
   "license": "MIT",
   "vpmDependencies": {
-    "com.vrchat.worlds": "^3.10.4"
+    "com.vrchat.worlds": "^3.10.4",
+    "io.siggi.ustools": "^1.0.0"
   },
   "author": {
     "name": "Sigurður Jón",

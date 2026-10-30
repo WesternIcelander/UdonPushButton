@@ -118,6 +118,9 @@ public static partial class PushButtonPlayModeTests
             List<string> stillShown = new List<string>(moved).FindAll(shown.Contains);
             Check(name + " moved settings not shown", stillShown.Count == 0, "still shows " + string.Join(", ", stillShown));
             Check(name + " interactText still shown", shown.Contains("interactText"), "fields: " + string.Join(", ", shown));
+            // Plan step 8.12: i18n comes right after manager under Setup.
+            Check(name + " i18n under manager", shown.IndexOf("manager") >= 0 && shown.IndexOf("i18n") == shown.IndexOf("manager") + 1
+                && HeaderOf(typeof(PushButton), "i18n") == "Setup", "fields: " + string.Join(", ", shown) + ", header " + HeaderOf(typeof(PushButton), "i18n"));
             // Plan step 8.9: interactText heads the Action group, above targetBehaviour, and there's no Desktop header.
             int interactIndex = shown.IndexOf("interactText");
             Check(name + " interactText first under Action", interactIndex >= 0 && shown.IndexOf("targetBehaviour") == interactIndex + 1
