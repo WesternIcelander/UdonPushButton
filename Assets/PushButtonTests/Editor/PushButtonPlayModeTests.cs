@@ -191,6 +191,7 @@ public static partial class PushButtonPlayModeTests
         AddTransformWriteTest();
         AddSettingsTest();
         AddI18nTest();
+        AddSetInteractTextTest();
         AddNoManagerTest();
         AddInspectorTest();
         AddRegressionPass(" (rotated parent)", true);

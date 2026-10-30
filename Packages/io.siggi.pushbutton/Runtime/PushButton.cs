@@ -136,6 +136,8 @@ public class PushButton : UdonSharpBehaviour
     private bool i18nListening;
     // Whether the warning about an I18n that can't answer has been logged.
     private bool i18nWarned;
+    // Whether SetInteractText made interactText a literal text, shown as it is even with an I18n set.
+    private bool interactTextIsLiteral;
     // Engagement state of the debug fingertip, which isn't a tracked player's slot.
     private bool debugEngaged;
     private bool debugWasInFront;
@@ -252,6 +254,25 @@ public class PushButton : UdonSharpBehaviour
     }
 
     /// <summary>
+    /// Changes the interact text at runtime, on this client only. By default the text is shown exactly as given, even
+    /// with an I18n set, and stays through language changes. With isI18nKey it's an I18n key, translated and following
+    /// the language like a key set in the Inspector, or shown as it is (with a warning) if the button has no I18n.
+    /// The new text survives disabling and enabling, and a disabled button takes it too. This never changes whether
+    /// the button can be clicked: if it can't be now, the text shows once it can. Udon drops calls to a behaviour it
+    /// hasn't started yet, so a call on a button that has never been enabled does nothing: it keeps its saved text.
+    /// </summary>
+    public void SetInteractText(string text, bool isI18nKey = false)
+    {
+        interactText = text;
+        interactTextIsLiteral = !isI18nKey;
+        if (isI18nKey && !string.IsNullOrEmpty(text) && !Utilities.IsValid(i18n))
+        {
+            Debug.LogWarning("[PushButton] " + name + ": the interact text is an I18n key, but no I18n is set, so it isn't translated");
+        }
+        _UpdateInteractive();
+    }
+
+    /// <summary>
     /// Whether the button can be pressed now: enabled, registered and its manager running. Clicks and networked
     /// clicks that arrive otherwise are ignored (Udon delivers events to disabled behaviours too).
     /// </summary>
@@ -275,8 +296,8 @@ public class PushButton : UdonSharpBehaviour
     /// Desktop and mobile players (or no local player at all) click the button. VR players press with their fingers,
     /// so Interact is disabled for them unless the manager's allowVRTrigger is on. A button with no manager can't be
     /// clicked at all. Called by the manager whenever it pushes its settings, so ApplySettings can toggle it at runtime.
-    /// The text is interactText, read through i18n once the button listens to it. A null or empty interactText never
-    /// reads I18n, which would log a missing key.
+    /// The text is interactText, read through i18n once the button listens to it, unless SetInteractText made it a
+    /// literal. A null or empty interactText never reads I18n, which would log a missing key.
     /// </summary>
     public void _UpdateInteractive()
     {
@@ -288,7 +309,7 @@ public class PushButton : UdonSharpBehaviour
             return;
         }
         DisableInteractive = false;
-        InteractionText = i18nListening && !string.IsNullOrEmpty(interactText) && Utilities.IsValid(i18n) ? i18n._(interactText) : interactText;
+        InteractionText = !interactTextIsLiteral && i18nListening && !string.IsNullOrEmpty(interactText) && Utilities.IsValid(i18n) ? i18n._(interactText) : interactText;
     }
 
     /// <summary>

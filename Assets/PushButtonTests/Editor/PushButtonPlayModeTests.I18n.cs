@@ -37,6 +37,20 @@ public static partial class PushButtonPlayModeTests
     // only now, with its holder active.
     static UdonBehaviour MakeI18nButton(string cloneName, UdonBehaviour i18n, string key)
     {
+        UdonBehaviour udon = MakeUnstartedI18nButton(cloneName, i18n, key);
+        StartI18nButton(udon);
+        return udon;
+    }
+
+    static void StartI18nButton(UdonBehaviour udon)
+    {
+        udon.transform.parent.gameObject.SetActive(true);
+        udon.InitializeUdonContent();
+    }
+
+    // The same, still off and never started, until StartI18nButton.
+    static UdonBehaviour MakeUnstartedI18nButton(string cloneName, UdonBehaviour i18n, string key)
+    {
         Transform parent = sceneButton.transform.parent;
         GameObject holder = new GameObject(cloneName + "Holder");
         holder.SetActive(false);
@@ -52,8 +66,6 @@ public static partial class PushButtonPlayModeTests
         if (i18n != null) SetSavedVariable(udon.publicVariables, "i18n", i18n);
         else udon.publicVariables.RemoveVariable("i18n");
         SetSavedVariable(udon.publicVariables, "interactText", key);
-        holder.SetActive(true);
-        udon.InitializeUdonContent();
         return udon;
     }
 
